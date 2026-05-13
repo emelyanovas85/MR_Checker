@@ -4,7 +4,7 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
 }
 
-group = "com.example"
+group = "ru.cbr.bugbusters"
 version = "1.0.0"
 
 java {
