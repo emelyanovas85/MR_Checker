@@ -17,9 +17,14 @@ public class OpenApiConfig {
     public OpenAPI customOpenAPI() {
         return new OpenAPI()
                 .info(new Info()
-                        .title("Webhook Handler API")
+                        .title("""
+                                Webhook Handler API
+                                """)
                         .description("""
-                                Универсальный обработчик webhook-ов от GitLab и GitHub.
+                                 <img src="/images/img.png" alt="Webhook Handler" width="100"/>
+                                
+                                
+                                ## Универсальный обработчик webhook-ов от GitLab и GitHub.
 
                                 **GitLab** использует plain-text токен в заголовке `X-Gitlab-Token`.
 
