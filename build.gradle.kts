@@ -30,7 +30,10 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind")
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Spring Boot 4.x: @WebMvcTest moved to a dedicated module
+    testImplementation("org.springframework.boot:spring-boot-webmvc-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

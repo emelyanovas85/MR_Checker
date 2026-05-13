@@ -4,7 +4,11 @@ import com.example.gitlabwebhookhandler.service.WebhookService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+// Spring Boot 4.x: package relocated from
+//   org.springframework.boot.test.autoconfigure.web.servlet
+// to
+//   org.springframework.boot.webmvc.test.autoconfigure
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -13,6 +17,7 @@ import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -77,7 +82,7 @@ class WebhookControllerTest {
 
     @Test
     void shouldReturn401WhenServiceThrowsSecurityException() throws Exception {
-        org.mockito.Mockito.doThrow(new SecurityException("Invalid GitLab webhook token"))
+        doThrow(new SecurityException("Invalid GitLab webhook token"))
                 .when(webhookService).process(any(), any(), any());
 
         mockMvc.perform(post("/api/webhook/gitlab")
