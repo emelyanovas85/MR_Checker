@@ -39,7 +39,7 @@ Spring Boot приложение для приёма и обработки webho
 | GET   | `/actuator/health`     | —       |
 
 ## Запуск
-
+ 
 ```bash
 # Без токенов (только для разработки)
 ./gradlew bootRun
