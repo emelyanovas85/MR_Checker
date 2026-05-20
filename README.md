@@ -120,7 +120,7 @@ services:
   webhook-handler:
     image: webhook-handler:latest
     ports:
-      - "8080:8080"
+      - "8081:8081"
     environment:
       GITLAB_URL: https://your.gitlab.com
       GITLAB_TOKEN: glpat-xxxxxxxxxxxx
@@ -132,7 +132,7 @@ services:
 ## Настройка webhook в GitLab
 
 1. Перейдите в **Settings → Webhooks** вашего GitLab-проекта.
-2. URL: `http://<your-host>:8080/api/v1/webhooks/gitlab`
+2. URL: `http://<your-host>:8081/api/v1/webhooks/gitlab`
 3. Secret Token: значение `GITLAB_WEBHOOK_TOKEN`
 4. Включите событие: **Comments** (Note events)
 5. Сохраните.
@@ -180,7 +180,7 @@ services:
 ./gradlew bootRun
 
 # Swagger UI
-http://localhost:8080/swagger-ui.html
+http://localhost:8081/swagger-ui.html
 ```
 
 ## Зависимые сервисы
