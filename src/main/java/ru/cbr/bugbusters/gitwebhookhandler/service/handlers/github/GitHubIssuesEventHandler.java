@@ -1,6 +1,6 @@
 package ru.cbr.bugbusters.gitwebhookhandler.service.handlers.github;
 
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,19 +10,14 @@ public class GitHubIssuesEventHandler implements GitHubEventHandler {
 
     @Override
     public boolean supports(String eventType) {
-        return "issues".equalsIgnoreCase(eventType);
+        return "issues".equals(eventType);
     }
 
     @Override
     public void handle(JsonNode payload) {
-        String action = payload.path("action").asText("unknown");
-        String title  = payload.path("issue").path("title").asText("unknown");
-        String author = payload.path("issue").path("user").path("login").asText("unknown");
-        String repo   = payload.path("repository").path("full_name").asText("unknown");
-
-        log.info("[GitHub ISSUES] Repo: {}, Action: {}, Title: '{}', Author: {}",
-                repo, action, title, author);
-
-        // TODO: add your business logic here
+        if (payload == null || payload.isMissingNode()) return;
+        String action = payload.path("action").asText(null);
+        String title = payload.path("issue").path("title").asText(null);
+        log.info("[GitHub] Issue event action={} title={}", action, title);
     }
 }

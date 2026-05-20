@@ -38,7 +38,7 @@ class GitHubWebhookServiceTest {
     }
 
     @Test
-    void shouldDelegateToMatchingHandler() {
+    void shouldDelegateToMatchingHandler() throws Exception {
         JsonNode payload = mapper.createObjectNode();
         when(handlerA.supports("push")).thenReturn(true);
         when(handlerB.supports("push")).thenReturn(false);
@@ -51,7 +51,8 @@ class GitHubWebhookServiceTest {
 
     @Test
     void shouldNotCallAnyHandlerWhenEventTypeIsNull() {
-        service.process(null, null, "{}", mapper.createObjectNode());
+        JsonNode payload = mapper.createObjectNode();
+        service.process(null, null, "{}", payload);
         verify(handlerA, never()).handle(any());
         verify(handlerB, never()).handle(any());
     }
@@ -59,8 +60,9 @@ class GitHubWebhookServiceTest {
     @Test
     void shouldThrowWhenSignatureMissing() {
         ReflectionTestUtils.setField(service, "secretToken", "my-secret");
+        JsonNode payload = mapper.createObjectNode();
 
-        assertThatThrownBy(() -> service.process("push", null, "{}", mapper.createObjectNode()))
+        assertThatThrownBy(() -> service.process("push", null, "{}", payload))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("Missing or malformed");
     }
@@ -68,8 +70,9 @@ class GitHubWebhookServiceTest {
     @Test
     void shouldThrowWhenSignatureInvalid() {
         ReflectionTestUtils.setField(service, "secretToken", "my-secret");
+        JsonNode payload = mapper.createObjectNode();
 
-        assertThatThrownBy(() -> service.process("push", "sha256=wrong", "{}", mapper.createObjectNode()))
+        assertThatThrownBy(() -> service.process("push", "sha256=wrong", "{}", payload))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("Invalid GitHub webhook signature");
     }
@@ -77,7 +80,7 @@ class GitHubWebhookServiceTest {
     @Test
     void shouldPassWhenSignatureValid() throws Exception {
         String secret = "my-secret";
-        String body   = "{\"ref\":\"refs/heads/main\"}";
+        String body = "{\"ref\":\"refs/heads/main\"}";
         ReflectionTestUtils.setField(service, "secretToken", secret);
 
         Mac mac = Mac.getInstance("HmacSHA256");
@@ -96,7 +99,8 @@ class GitHubWebhookServiceTest {
     void shouldSkipSignatureValidationWhenSecretNotConfigured() {
         when(handlerA.supports("push")).thenReturn(false);
         when(handlerB.supports("push")).thenReturn(false);
+        JsonNode payload = mapper.createObjectNode();
 
-        service.process("push", null, "{}", mapper.createObjectNode());
+        service.process("push", null, "{}", payload);
     }
 }

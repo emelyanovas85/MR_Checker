@@ -41,11 +41,12 @@ class MergeRequestEventHandlerTest {
         ObjectNode payload = mapper.createObjectNode();
         payload.set("object_attributes", attrs);
 
-        assertThatCode(() -> handler.handle((JsonNode) payload)).doesNotThrowAnyException();
+        assertThatCode(() -> handler.handle(payload)).doesNotThrowAnyException();
     }
 
     @Test
     void shouldHandleEmptyPayloadGracefully() {
-        assertThatCode(() -> handler.handle((JsonNode) mapper.createObjectNode())).doesNotThrowAnyException();
+        JsonNode empty = mapper.createObjectNode();
+        assertThatCode(() -> handler.handle(empty)).doesNotThrowAnyException();
     }
 }

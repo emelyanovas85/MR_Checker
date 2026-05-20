@@ -3,7 +3,7 @@ package ru.cbr.bugbusters.gitwebhookhandler.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -16,6 +16,7 @@ import java.util.Map;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -38,7 +39,7 @@ class WebhookControllerTest {
     void shouldReturn202AndDelegateForNoteHook() throws Exception {
         AppProperties.GitLabProperties gitlabProps = new AppProperties.GitLabProperties(
                 "http://localhost", "token", "changeme");
-        org.mockito.Mockito.when(appProperties.gitlab()).thenReturn(gitlabProps);
+        when(appProperties.gitlab()).thenReturn(gitlabProps);
 
         String payload = objectMapper.writeValueAsString(Map.of(
                 "object_kind", "note",
@@ -59,7 +60,7 @@ class WebhookControllerTest {
     void shouldReturn403WhenTokenInvalid() throws Exception {
         AppProperties.GitLabProperties gitlabProps = new AppProperties.GitLabProperties(
                 "http://localhost", "token", "changeme");
-        org.mockito.Mockito.when(appProperties.gitlab()).thenReturn(gitlabProps);
+        when(appProperties.gitlab()).thenReturn(gitlabProps);
 
         mockMvc.perform(post("/api/v1/webhooks/gitlab")
                         .header("X-Gitlab-Event", "Note Hook")
@@ -73,7 +74,7 @@ class WebhookControllerTest {
     void shouldReturn403WhenTokenMissing() throws Exception {
         AppProperties.GitLabProperties gitlabProps = new AppProperties.GitLabProperties(
                 "http://localhost", "token", "changeme");
-        org.mockito.Mockito.when(appProperties.gitlab()).thenReturn(gitlabProps);
+        when(appProperties.gitlab()).thenReturn(gitlabProps);
 
         mockMvc.perform(post("/api/v1/webhooks/gitlab")
                         .header("X-Gitlab-Event", "Note Hook")
