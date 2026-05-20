@@ -1,6 +1,6 @@
 package ru.cbr.bugbusters.gitwebhookhandler.service.handlers.gitlab;
 
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,20 +10,15 @@ public class PipelineEventHandler implements GitLabEventHandler {
 
     @Override
     public boolean supports(String eventType) {
-        return "Pipeline Hook".equalsIgnoreCase(eventType);
+        return "Pipeline Hook".equals(eventType);
     }
 
     @Override
     public void handle(JsonNode payload) {
-        JsonNode attrs    = payload.path("object_attributes");
-        String   status   = attrs.path("status").asText("unknown");
-        String   ref      = attrs.path("ref").asText("unknown");
-        long     duration = attrs.path("duration").asLong(0);
-        String   project  = payload.path("project").path("name").asText("unknown");
-
-        log.info("[GitLab PIPELINE] Project: {}, Branch: {}, Status: {}, Duration: {}s",
-                project, ref, status, duration);
-
-        // TODO: add your business logic here
+        if (payload == null || payload.isMissingNode()) return;
+        JsonNode attrs = payload.path("object_attributes");
+        long pipelineId = attrs.path("id").asLong(0);
+        String status = attrs.path("status").asText(null);
+        log.info("[GitLab] Pipeline event id={} status={}", pipelineId, status);
     }
 }

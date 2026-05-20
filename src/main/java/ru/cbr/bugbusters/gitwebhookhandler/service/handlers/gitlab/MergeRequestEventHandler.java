@@ -1,6 +1,6 @@
 package ru.cbr.bugbusters.gitwebhookhandler.service.handlers.gitlab;
 
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,21 +10,17 @@ public class MergeRequestEventHandler implements GitLabEventHandler {
 
     @Override
     public boolean supports(String eventType) {
-        return "Merge Request Hook".equalsIgnoreCase(eventType);
+        return "Merge Request Hook".equals(eventType);
     }
 
     @Override
     public void handle(JsonNode payload) {
-        JsonNode attrs        = payload.path("object_attributes");
-        String   title        = attrs.path("title").asText("unknown");
-        String   state        = attrs.path("state").asText("unknown");
-        String   sourceBranch = attrs.path("source_branch").asText("unknown");
-        String   targetBranch = attrs.path("target_branch").asText("unknown");
-        String   authorName   = payload.path("user").path("name").asText("unknown");
-
-        log.info("[GitLab MR] Title: '{}', State: {}, {}->{}, Author: {}",
-                title, state, sourceBranch, targetBranch, authorName);
-
-        // TODO: add your business logic here
+        if (payload == null || payload.isMissingNode()) return;
+        JsonNode attrs = payload.path("object_attributes");
+        String title = attrs.path("title").asText(null);
+        String state = attrs.path("state").asText(null);
+        String sourceBranch = attrs.path("source_branch").asText(null);
+        String targetBranch = attrs.path("target_branch").asText(null);
+        log.info("[GitLab] MR event state={} title='{}' {}→{}", state, title, sourceBranch, targetBranch);
     }
 }
