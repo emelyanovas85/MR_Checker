@@ -1,1 +1,1 @@
-rootProject.name = "gitlab-webhook-handler"
+rootProject.name = "git-webhook-handler"
