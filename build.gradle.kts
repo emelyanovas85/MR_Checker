@@ -20,6 +20,17 @@ configurations {
 }
 
 repositories {
+    // Корпоративный Artifactory CBR — dev-снапшоты и релизы
+    maven {
+        name = "office_dev"
+        url = uri("http://10.1.5.6:8882/artifactory/gradle-dev")
+        isAllowInsecureProtocol = true
+    }
+    maven {
+        name = "office_release"
+        url = uri("http://10.1.5.6:8882/artifactory/gradle-release-local/")
+        isAllowInsecureProtocol = true
+    }
     mavenCentral()
 }
 
@@ -40,6 +51,9 @@ dependencies {
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.8")
+
+    // webhook-distributor-client — из корпоративного Artifactory CBR
+    implementation("bugbusters.modules:webhook-distributor-client:1.0.0")
 
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
