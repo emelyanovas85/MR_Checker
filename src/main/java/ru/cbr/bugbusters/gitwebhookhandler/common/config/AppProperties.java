@@ -20,5 +20,10 @@ public record AppProperties(
      */
     public record GraphServiceProperties(String url) {}
 
-    public record AiProperties(String systemPrompt) {}
+    /**
+     * Настройки AI.
+     * promptFile — путь к файлу с system prompt (classpath-ресурс).
+     * По умолчанию: classpath:prompts/system-prompt.md
+     */
+    public record AiProperties(String promptFile) {}
 }
