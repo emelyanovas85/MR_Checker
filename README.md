@@ -1,88 +1,91 @@
-# GitLab Webhook Handler — Async MR Review Bot
+# MR Checker — Async AI Code Review Bot
 
-Spring Boot-приложение, которое принимает GitLab webhook-события, запускает асинхронный AI code review по группам изменений и публикует единый структурированный комментарий к Merge Request.
+Spring Boot-приложение, которое подписывается на GitLab webhook-события через **webhook-distributor** (SSE), автоматически запускает асинхронный AI code review при открытии/переоткрытии/апруве Merge Request и публикует структурированный комментарий прямо в MR.
 
 ## Как это работает
 
 ```
-GitLab Note Hook (MR comment: "review")
+GitLab → webhook-distributor (SSE)
         │
         ▼
-POST /api/v1/webhooks/gitlab
+GitLabWebhookSubscriber  — подписка через SSE
         │
         ▼
-NoteHookHandler — проверяет команду
+GitLabWebhookDispatcher  — маршрутизация по типу события
         │
         ▼
-MrReviewOrchestrator
+MergeRequestHookHandler  — фильтрует: open / reopen / approved
         │
-        ├── MrRagContextClient → java-mr-rag (POST /api/review)
-        │       получает группы изменений с контекстом
+        ▼
+MrReviewOrchestrator  (@Async)
         │
-        ├── LlmReviewService → OpenAI ChatClient
-        │       параллельные запросы по каждой группе (virtual threads)
+        ├── GraphServiceClient  → граф-сервис (POST /api/graph/contexts)
+        │       получает список контекстов (фрагментов кода) для ревью
+        │
+        ├── LlmReviewService  → OpenAI ChatClient
+        │       параллельные запросы по каждому контексту
         │
         ├── MarkdownCommentFormatter
         │       собирает единый комментарий с <details>/<summary>
         │
-        └── GitLabNotesPublisher → GitLab Notes API
+        └── GitLabNotesPublisher  → GitLab Notes API
                 POST /api/v4/projects/:id/merge_requests/:iid/notes
 ```
 
-### Запуск review
+### Когда запускается ревью
 
-Напишите комментарий к MR в GitLab:
-```
-review
-```
-Приложение получит webhook, запустит анализ и опубликует AI-ответ комментарием к тому же MR.
+Ревью запускается **автоматически** при следующих событиях в GitLab:
+- MR **открыт** (`open`)
+- MR **переоткрыт** (`reopen`)
+- MR **апрувнут** (`approved`)
+
+Никаких ручных команд писать не нужно.
 
 ## Стек
 
 | Компонент | Версия |
 |---|---|
-| Java | 21 (virtual threads) |
-| Spring Boot | 3.5.6 |
+| Java | 21 |
+| Spring Boot | 3.5.x |
 | Spring AI | 1.0.0 GA |
-| Spring Data JPA | — (managed by Boot) |
-| H2 | in-memory |
-| Flyway | schema migrations |
 | GitLab4J | 6.0.0 |
+| webhook-distributor-client | internal |
 | Gradle Wrapper | 8.14+ |
 
 ## Структура проекта
 
 ```
-src/main/java/ru/cbr/bugbusters/gitwebhookhandler/
-├── GitlabWebhookHandlerApplication.java
-├── common/
-│   └── config/
-│       ├── AppProperties.java          # @ConfigurationProperties
-│       ├── AsyncConfig.java            # Virtual threads executor
-│       └── ClientConfig.java           # GitLabApi, ChatClient, RestClient beans
-├── controllers/
-│   └── GitLabWebhookController.java    # POST /api/v1/webhooks/gitlab
-├── exceptions/
-│   └── GlobalExceptionHandler.java     # @RestControllerAdvice, ProblemDetail
-├── review/
-│   ├── api/                            # DTO: ReviewGroupContext, GroupAnalysisResult
-│   ├── domain/                         # ReviewEvent entity
-│   ├── persistence/                    # ReviewEventRepository
-│   └── service/
-│       ├── MrReviewOrchestrator.java   # главный оркестратор (async)
-│       ├── MrRagContextClient.java     # HTTP-клиент к java-mr-rag
-│       ├── LlmReviewService.java       # параллельные запросы в LLM
-│       ├── MarkdownCommentFormatter.java # форматирование <details>/<summary>
-│       └── GitLabNotesPublisher.java   # публикация комментария в GitLab
-├── webhook/
-│   ├── domain/                         # MergeRequestEvent, NoteEvent DTO
-│   └── service/
-│       ├── GitLabWebhookDispatcher.java # маршрутизация webhook-событий
-│       └── NoteHookHandler.java        # обработка note_events
-src/main/resources/
-├── application.yml
-└── db/migration/
-    └── V1__create_review_event.sql
+src/main/
+├── java/ru/cbr/bugbusters/gitwebhookhandler/
+│   ├── GitlabWebhookHandlerApplication.java
+│   ├── common/
+│   │   └── config/
+│   │       ├── AppProperties.java           # @ConfigurationProperties
+│   │       ├── AsyncConfig.java             # reviewExecutor (thread pool)
+│   │       └── ClientConfig.java            # GitLabApi, ChatClient, RestClient
+│   ├── exceptions/
+│   │   └── GlobalExceptionHandler.java      # @RestControllerAdvice, ProblemDetail
+│   ├── review/
+│   │   ├── api/                             # DTO: ReviewTriggerCommand, GroupReviewResult
+│   │   ├── domain/                          # GroupReviewResult и другие domain-объекты
+│   │   └── service/
+│   │       ├── MrReviewOrchestrator.java    # главный оркестратор (@Async)
+│   │       ├── GraphServiceClient.java      # HTTP-клиент к граф-сервису
+│   │       ├── GraphServiceToolsProvider.java # Spring AI tools для LLM
+│   │       ├── LlmReviewService.java        # параллельные запросы в LLM
+│   │       ├── MarkdownCommentFormatter.java # форматирование комментария
+│   │       └── GitLabNotesPublisher.java    # публикация комментария в GitLab
+│   └── webhook/
+│       ├── domain/                          # MergeRequestHookPayload DTO
+│       └── service/
+│           ├── GitLabWebhookSubscriber.java # SSE-подписка на webhook-distributor
+│           ├── GitLabWebhookDispatcher.java # маршрутизация по типу события
+│           └── MergeRequestHookHandler.java # обработка Merge Request Hook
+└── resources/
+    ├── application.yml
+    ├── application-local.yml
+    └── prompts/
+        └── system-prompt.md                 # system prompt для LLM (редактируется без пересборки)
 ```
 
 ## Конфигурация
@@ -93,11 +96,25 @@ src/main/resources/
 |---|---|---|
 | `GITLAB_URL` | Базовый URL GitLab-инстанса | `http://localhost` |
 | `GITLAB_TOKEN` | Personal Access Token для GitLab API | `changeme` |
-| `GITLAB_WEBHOOK_TOKEN` | Secret token из настроек webhook | `changeme` |
 | `OPENAI_API_KEY` | API-ключ OpenAI | `dummy` (только для старта) |
+| `OPENAI_BASE_URL` | Базовый URL OpenAI-совместимого API | `https://api.openai.com` |
 | `OPENAI_MODEL` | Модель OpenAI | `gpt-4o-mini` |
-| `MR_RAG_URL` | URL сервиса java-mr-rag | `http://localhost:8081` |
-| `REVIEW_TRIGGER_COMMAND` | Команда для запуска review | `review` |
+| `OPENAI_COMPLETIONS_PATH` | Путь к completions endpoint | `/v1/chat/completions` |
+| `GRAPH_SERVICE_URL` | URL граф-сервиса | `http://localhost:8090` |
+| `WEBHOOK_DISTRIBUTOR_URL` | URL webhook-distributor | `http://localhost:8080` |
+| `APP_AI_PROMPT_FILE` | Путь к файлу system prompt | `classpath:prompts/system-prompt.md` |
+
+### Переопределение system prompt
+
+Промпт хранится в `src/main/resources/prompts/system-prompt.md` и загружается при старте.
+Чтобы использовать внешний файл без пересборки — смонтируйте его в контейнер и передайте путь:
+
+```yaml
+environment:
+  APP_AI_PROMPT_FILE: file:/etc/mr-checker/system-prompt.md
+volumes:
+  - ./my-prompt.md:/etc/mr-checker/system-prompt.md
+```
 
 ## Запуск
 
@@ -106,9 +123,9 @@ src/main/resources/
 ```bash
 export GITLAB_URL=https://your.gitlab.com
 export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
-export GITLAB_WEBHOOK_TOKEN=my-secret
 export OPENAI_API_KEY=sk-xxxxxxxxxxxx
-export MR_RAG_URL=http://localhost:8081
+export GRAPH_SERVICE_URL=http://localhost:8090
+export WEBHOOK_DISTRIBUTOR_URL=http://localhost:8080
 
 ./gradlew bootRun
 ```
@@ -117,54 +134,16 @@ export MR_RAG_URL=http://localhost:8081
 
 ```yaml
 services:
-  webhook-handler:
-    image: webhook-handler:latest
+  mr-checker:
+    image: mr-checker:latest
     ports:
       - "8081:8081"
     environment:
       GITLAB_URL: https://your.gitlab.com
       GITLAB_TOKEN: glpat-xxxxxxxxxxxx
-      GITLAB_WEBHOOK_TOKEN: my-secret
       OPENAI_API_KEY: sk-xxxxxxxxxxxx
-      MR_RAG_URL: http://mr-rag:8081
-```
-
-## Настройка webhook в GitLab
-
-1. Перейдите в **Settings → Webhooks** вашего GitLab-проекта.
-2. URL: `http://<your-host>:8081/api/v1/webhooks/gitlab`
-3. Secret Token: значение `GITLAB_WEBHOOK_TOKEN`
-4. Включите событие: **Comments** (Note events)
-5. Сохраните.
-
-Теперь любой комментарий `review` к MR запустит анализ.
-
-## Формат комментария в MR
-
-Ответ публикуется единым комментарием с раскрываемыми секциями:
-
-```markdown
-## 🤖 AI Code Review
-
-> Автоматический анализ по **3 группам** изменений.
-
-⚠️ **Обнаружено замечаний: 1 из 3 групп**
-
----
-
-<details>
-<summary>🟢 <b>auth-module</b> — ОК</summary>
-
-Изменения корректны. Замечаний нет.
-
-</details>
-
-<details>
-<summary>🟡 <b>payment-service</b> — Есть замечания</summary>
-
-⚠️ Метод `processPayment()` не обрабатывает timeout-сценарий.
-
-</details>
+      GRAPH_SERVICE_URL: http://graph-service:8090
+      WEBHOOK_DISTRIBUTOR_URL: http://webhook-distributor:8080
 ```
 
 ## Сборка и тесты
@@ -185,4 +164,5 @@ http://localhost:8081/swagger-ui.html
 
 ## Зависимые сервисы
 
-- **java-mr-rag** — сервис, который получает контекст изменений из GitLab и возвращает группы для анализа. Ожидается на `MR_RAG_URL`. Интеграция через `MrRagContextClient` (`POST /api/review`).
+- **webhook-distributor** — принимает webhook-события от GitLab и раздаёт их подписчикам через SSE. Ожидается на `WEBHOOK_DISTRIBUTOR_URL`.
+- **граф-сервис** — принимает данные MR и возвращает список контекстов (фрагментов кода) для ревью. Ожидается на `GRAPH_SERVICE_URL`.
