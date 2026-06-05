@@ -29,8 +29,10 @@
 # Примечание: удалённый хост не имеет доступа в интернет.
 # Docker-образ mcp/gitlab:latest поддерживает только stdio-транспорт.
 # Для работы со Spring AI (HTTP/SSE) используется supergateway —
-# пакет устанавливается в образ ЛОКАЛЬНО через Dockerfile,
-# после чего образ передаётся на удалённую машину через SSH
+# в качестве base image используется официальный образ
+# ghcr.io/supercorp-ai/supergateway:3.2.0, поверх которого добавляются
+# файлы GitLab MCP Server.
+# Готовый образ передаётся на удалённую машину через SSH
 # (docker save | ssh docker load) без промежуточного файла.
 # Это позволяет работать без доступа в интернет на удалённом хосте.
 #
@@ -61,6 +63,10 @@ REMOTE_PORT="22"
 SSH_KEY=""
 IMAGE_NAME="mcp/gitlab:latest"
 BUILT_IMAGE_NAME="mcp/gitlab-http:latest"
+# Официальный образ supergateway v3.2.0 — стабильная версия без бага
+# "Already connected to a transport" при SSE reconnect.
+# Используется как base image вместо npm install -g supergateway.
+SUPERGATEWAY_IMAGE="ghcr.io/supercorp-ai/supergateway:3.2.0"
 APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
 GITLAB_API_URL="http://10.1.5.6/api/v4"
@@ -154,7 +160,7 @@ DOCKER_COMPOSE=$($SSH_CMD \
   'if docker compose version >/dev/null 2>&1; then echo "docker compose"; else echo "docker-compose"; fi')
 log "Используем compose: ${DOCKER_COMPOSE}"
 
-# ── Получение базового образа локально ────────────────────────────────────────
+# ── Получение базового образа mcp/gitlab локально ─────────────────────────────
 if [[ "${NO_PULL}" == "false" ]]; then
   log "Проверка/скачивание локального образа ${IMAGE_NAME}..."
   docker pull "${IMAGE_NAME}" || error "Не удалось скачать образ ${IMAGE_NAME} локально"
@@ -166,25 +172,52 @@ else
   ok "Локальный образ ${IMAGE_NAME} найден"
 fi
 
-# ── Сборка нового образа с supergateway локально ──────────────────────────────
-log "Сборка образа ${BUILT_IMAGE_NAME} с предустановленным supergateway (локально)..."
+# ── Получение официального образа supergateway локально ───────────────────────
+log "Проверка/скачивание официального образа supergateway ${SUPERGATEWAY_IMAGE}..."
+docker pull "${SUPERGATEWAY_IMAGE}" \
+  || error "Не удалось скачать образ ${SUPERGATEWAY_IMAGE} локально"
+ok "Локальный образ ${SUPERGATEWAY_IMAGE} готов"
+
+# ── Сборка нового образа на базе официального supergateway ────────────────────
+log "Сборка образа ${BUILT_IMAGE_NAME} на базе официального supergateway ${SUPERGATEWAY_IMAGE} (локально)..."
 
 BUILD_CTX="$(mktemp -d /tmp/gitlab-mcp-build-XXXXXX)"
 
+# Извлекаем файлы GitLab MCP Server из исходного образа во временный контекст сборки.
+# Официальный образ supergateway используется как base image —
+# это надёжнее, чем npm install -g supergateway поверх произвольного образа.
+docker create --name _gitlab_mcp_extract "${IMAGE_NAME}"
+docker cp _gitlab_mcp_extract:/app/. "${BUILD_CTX}/app/" 2>/dev/null \
+  || docker cp _gitlab_mcp_extract:/usr/local/lib/node_modules/. "${BUILD_CTX}/app/" 2>/dev/null \
+  || true
+docker rm _gitlab_mcp_extract
+
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
-FROM ${IMAGE_NAME}
-# Устанавливаем supergateway глобально внутри образа,
-# чтобы не требовать доступа в интернет на удалённой машине.
-# --healthEndpoint /health включает GET /health -> "ok"
-RUN npm install -g supergateway
-ENTRYPOINT ["supergateway", "--stdio", "node dist/index.js", "--port", "${MCP_PORT}", "--healthEndpoint", "/health"]
+# Официальный образ supergateway v3.2.0 — стабильная версия.
+# Используем как base image: supergateway уже установлен и настроен,
+# npm install -g supergateway не требуется.
+FROM ${SUPERGATEWAY_IMAGE}
+
+# Копируем содержимое GitLab MCP Server из исходного образа.
+COPY --from=${IMAGE_NAME} /app /app
+
+WORKDIR /app
+
+# supergateway запускается как ENTRYPOINT официального образа.
+# Передаём параметры: stdio-команда, порт, SSE/message пути, health endpoint.
+CMD ["--stdio", "node dist/index.js", \
+     "--port", "${MCP_PORT}", \
+     "--outputTransport", "sse", \
+     "--ssePath", "/sse", \
+     "--messagePath", "/message", \
+     "--healthEndpoint", "/health"]
 DOCKERFILE
 
 docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
   || error "Не удалось собрать образ ${BUILT_IMAGE_NAME}"
 
 rm -rf "${BUILD_CTX}"
-ok "Образ ${BUILT_IMAGE_NAME} собран локально"
+ok "Образ ${BUILT_IMAGE_NAME} собран локально на базе официального supergateway"
 
 # ── Передача собранного образа на сервер ──────────────────────────────────────
 log "Передача образа ${BUILT_IMAGE_NAME} на ${REMOTE_HOST} (docker save | ssh docker load)..."
@@ -277,7 +310,7 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MCP сервера (supergateway встроен в образ)..."
+log "Запуск GitLab MCP сервера (официальный supergateway:3.2.0 встроен в образ)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
