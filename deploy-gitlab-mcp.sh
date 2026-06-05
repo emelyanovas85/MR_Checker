@@ -33,6 +33,14 @@
 # после чего образ передаётся на удалённую машину через SSH
 # (docker save | ssh docker load) без промежуточного файла.
 # Это позволяет работать без доступа в интернет на удалённом хосте.
+#
+# Supergateway поднимает SSE-транспорт со следующими endpoint-ами:
+# GET  /health  — health check (возвращает "ok")
+# GET  /sse     — открытие SSE-сессии, возвращает sessionId
+# POST /message?sessionId=<id> — отправка JSON-RPC сообщений
+#
+# Для Spring AI MCP client используйте:
+# spring.ai.mcp.client.sse.connections.gitlab.url: http://<host>:<port>/sse
 # =============================================================================
 
 set -euo pipefail
@@ -166,9 +174,10 @@ BUILD_CTX="$(mktemp -d /tmp/gitlab-mcp-build-XXXXXX)"
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM ${IMAGE_NAME}
 # Устанавливаем supergateway глобально внутри образа,
-# чтобы не требовать доступа в интернет на удалённой машине
+# чтобы не требовать доступа в интернет на удалённой машине.
+# --healthEndpoint /health включает GET /health -> "ok"
 RUN npm install -g supergateway
-ENTRYPOINT ["supergateway", "--stdio", "node dist/index.js", "--port", "${MCP_PORT}"]
+ENTRYPOINT ["supergateway", "--stdio", "node dist/index.js", "--port", "${MCP_PORT}", "--healthEndpoint", "/health"]
 DOCKERFILE
 
 docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
@@ -274,7 +283,7 @@ ok "Контейнер запущен"
 
 log "Проверка статуса контейнера..."
 sleep 5
-if ! docker ps --filter 'name=gitlab-mcp' --format '{{.Names}}' | grep -q '^gitlab-mcp$'; then
+if ! docker ps --filter 'name=gitlab-mcp' --format '{{.Names}}' | grep -q '^gitlab-mcp\$'; then
   warn "Контейнер не перешёл в состояние running. Последние логи:"
   eval "\${DOCKER_COMPOSE} logs --tail=100"
   fail "GitLab MCP не запущен"
@@ -296,27 +305,68 @@ if [[ "\${READY}" != "true" ]]; then
   fail "GitLab MCP не стал доступен"
 fi
 
-# Проверка MCP initialize endpoint
-log "Проверка MCP HTTP endpoint..."
-MCP_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST http://localhost:\${MCP_PORT}/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
-  --max-time 5 2>/dev/null || echo "CURL_FAILED")
-
-if echo "\${MCP_RESPONSE}" | grep -q '"result"'; then
-  ok "MCP endpoint отвечает корректно"
+# ── Проверка 1: GET /health ──────────────────────────────────────────────────
+log "Проверка 1/3: GET /health..."
+HEALTH_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 \
+  http://localhost:\${MCP_PORT}/health --max-time 5 2>/dev/null || echo "CURL_FAILED")
+if [[ "\${HEALTH_RESPONSE}" == "ok" ]]; then
+  ok "Health endpoint отвечает корректно (→ ok)"
 else
-  warn "MCP endpoint не ответил ожидаемым образом. Ответ: \${MCP_RESPONSE}"
-  warn "Проверьте логи: docker logs gitlab-mcp --tail=50"
+  warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
+  warn "Это нормально если supergateway старше v2.x — переходим к проверке /sse"
+fi
+
+# ── Проверка 2: GET /sse — получение sessionId ──────────────────────────────
+log "Проверка 2/3: GET /sse (получение sessionId)..."
+SSE_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 \
+  http://localhost:\${MCP_PORT}/sse --max-time 5 2>/dev/null || echo "CURL_FAILED")
+
+if [[ "\${SSE_RESPONSE}" == "CURL_FAILED" ]]; then
+  warn "GET /sse не ответил — проверьте логи: docker logs gitlab-mcp --tail=50"
+else
+  ok "SSE endpoint отвечает"
+fi
+
+SESSION_ID=\$(printf '%s' "\${SSE_RESPONSE}" \
+  | sed -n 's#.*sessionId=\([^[:space:]]\+\).*#\1#p' | head -n1)
+
+if [[ -n "\${SESSION_ID}" ]]; then
+  ok "sessionId получен: \${SESSION_ID}"
+else
+  warn "sessionId не найден в ответе /sse. Ответ: \${SSE_RESPONSE}"
+fi
+
+# ── Проверка 3: POST /message?sessionId=... — initialize ────────────────────
+if [[ -n "\${SESSION_ID}" ]]; then
+  log "Проверка 3/3: POST /message?sessionId=\${SESSION_ID} (initialize)..."
+  INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST \
+    "http://localhost:\${MCP_PORT}/message?sessionId=\${SESSION_ID}" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
+    --max-time 5 2>/dev/null || echo "CURL_FAILED")
+
+  if [[ "\${INIT_RESPONSE}" == "CURL_FAILED" ]]; then
+    warn "POST /message не ответил"
+  elif echo "\${INIT_RESPONSE}" | grep -qiE '<html|Cannot POST|503'; then
+    warn "POST /message вернул ошибку: \${INIT_RESPONSE}"
+  else
+    ok "POST /message принят сервером (ответ в SSE-потоке)"
+  fi
+else
+  warn "Проверка 3/3 пропущена — sessionId не был получен"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
 echo ""
 eval "\${DOCKER_COMPOSE} ps"
 echo ""
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN} MCP URL: http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "\${GREEN} SSE URL    : http://\${SERVER_IP}:\${MCP_PORT}/sse\${NC}"
+echo -e "\${GREEN} Health URL : http://\${SERVER_IP}:\${MCP_PORT}/health\${NC}"
+echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+echo -e "\${YELLOW} Spring AI config:\${NC}"
+echo -e "  spring.ai.mcp.client.sse.connections.gitlab.url: http://\${SERVER_IP}:\${MCP_PORT}/sse\${NC}"
+echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 REMOTE_DEPLOY
 
 ok "Деплой GitLab MCP на ${REMOTE_HOST} завершён успешно"
