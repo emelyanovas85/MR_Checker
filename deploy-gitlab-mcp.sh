@@ -29,9 +29,10 @@
 # Примечание: удалённый хост не имеет доступа в интернет.
 # Docker-образ mcp/gitlab:latest поддерживает только stdio-транспорт.
 # Для работы со Spring AI (HTTP/SSE) используется supergateway —
-# npx-обёртка, которая проксирует stdio MCP-сервер в HTTP на указанный порт.
-# Образ скачивается/проверяется локально, затем передаётся через SSH
+# пакет устанавливается в образ ЛОКАЛЬНО через Dockerfile,
+# после чего образ передаётся на удалённую машину через SSH
 # (docker save | ssh docker load) без промежуточного файла.
+# Это позволяет работать без доступа в интернет на удалённом хосте.
 # =============================================================================
 
 set -euo pipefail
@@ -51,6 +52,7 @@ REMOTE_USER="svc-local-adm"
 REMOTE_PORT="22"
 SSH_KEY=""
 IMAGE_NAME="mcp/gitlab:latest"
+BUILT_IMAGE_NAME="mcp/gitlab-http:latest"
 APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
 GITLAB_API_URL="http://10.1.5.6/api/v4"
@@ -144,7 +146,7 @@ DOCKER_COMPOSE=$($SSH_CMD \
   'if docker compose version >/dev/null 2>&1; then echo "docker compose"; else echo "docker-compose"; fi')
 log "Используем compose: ${DOCKER_COMPOSE}"
 
-# ── Получение образа локально ─────────────────────────────────────────────────
+# ── Получение базового образа локально ────────────────────────────────────────
 if [[ "${NO_PULL}" == "false" ]]; then
   log "Проверка/скачивание локального образа ${IMAGE_NAME}..."
   docker pull "${IMAGE_NAME}" || error "Не удалось скачать образ ${IMAGE_NAME} локально"
@@ -156,15 +158,32 @@ else
   ok "Локальный образ ${IMAGE_NAME} найден"
 fi
 
-# ── Передача образа на сервер ─────────────────────────────────────────────────
-log "Передача образа на ${REMOTE_HOST} (docker save | ssh docker load)..."
-docker save "${IMAGE_NAME}" \
+# ── Сборка нового образа с supergateway локально ──────────────────────────────
+log "Сборка образа ${BUILT_IMAGE_NAME} с предустановленным supergateway (локально)..."
+
+BUILD_CTX="$(mktemp -d /tmp/gitlab-mcp-build-XXXXXX)"
+
+cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
+FROM ${IMAGE_NAME}
+# Устанавливаем supergateway глобально внутри образа,
+# чтобы не требовать доступа в интернет на удалённой машине
+RUN npm install -g supergateway
+ENTRYPOINT ["supergateway", "--stdio", "node dist/index.js", "--port", "${MCP_PORT}"]
+DOCKERFILE
+
+docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
+  || error "Не удалось собрать образ ${BUILT_IMAGE_NAME}"
+
+rm -rf "${BUILD_CTX}"
+ok "Образ ${BUILT_IMAGE_NAME} собран локально"
+
+# ── Передача собранного образа на сервер ──────────────────────────────────────
+log "Передача образа ${BUILT_IMAGE_NAME} на ${REMOTE_HOST} (docker save | ssh docker load)..."
+docker save "${BUILT_IMAGE_NAME}" \
   | ssh ${SSH_BASE_OPTS} -p "${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_HOST}" 'docker load'
 ok "Образ загружен на ${REMOTE_HOST}"
 
 # ── Подготовка env и compose локально ─────────────────────────────────────────
-# Образ mcp/gitlab:latest поддерживает только stdio.
-# supergateway (npx -y supergateway) проксирует stdio MCP -> HTTP.
 WORK_DIR="$(mktemp -d /tmp/gitlab-mcp-deploy-XXXXXX)"
 ENV_FILE="${WORK_DIR}/.env"
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
@@ -175,13 +194,13 @@ GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_PERSONAL_ACCESS_TOKEN}
 GITLAB_READ_ONLY_MODE=${GITLAB_READ_ONLY_MODE}
 USE_GITLAB_WIKI=${USE_GITLAB_WIKI}
 MCP_PORT=${MCP_PORT}
-IMAGE_NAME=${IMAGE_NAME}
+BUILT_IMAGE_NAME=${BUILT_IMAGE_NAME}
 EOF_ENV
 
 cat > "${COMPOSE_FILE}" <<'EOF_COMPOSE'
 services:
   gitlab-mcp:
-    image: ${IMAGE_NAME}
+    image: ${BUILT_IMAGE_NAME}
     container_name: gitlab-mcp
     restart: unless-stopped
     ports:
@@ -192,17 +211,9 @@ services:
       GITLAB_READ_ONLY_MODE: ${GITLAB_READ_ONLY_MODE}
       USE_GITLAB_WIKI: ${USE_GITLAB_WIKI}
       PORT: ${MCP_PORT}
-    entrypoint:
-      - npx
-      - -y
-      - supergateway
-      - --stdio
-      - node dist/index.js
-      - --port
-      - "${MCP_PORT}"
 EOF_COMPOSE
 
-ok "Локальные .env и docker-compose.yml подготовлены (с supergateway)"
+ok "Локальные .env и docker-compose.yml подготовлены"
 
 # ── Передача файлов на сервер ─────────────────────────────────────────────────
 log "Передача конфигурации на ${REMOTE_HOST}..."
@@ -257,7 +268,7 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MCP сервера через supergateway (stdio → HTTP)..."
+log "Запуск GitLab MCP сервера (supergateway встроен в образ)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
@@ -287,7 +298,7 @@ fi
 
 # Проверка MCP initialize endpoint
 log "Проверка MCP HTTP endpoint..."
-MCP_RESPONSE=\$(curl -s -X POST http://localhost:\${MCP_PORT}/mcp \
+MCP_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST http://localhost:\${MCP_PORT}/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 5 2>/dev/null || echo "CURL_FAILED")
