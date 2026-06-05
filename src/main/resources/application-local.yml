@@ -2,11 +2,11 @@
 # Не коммитить реальные ключи!
 app:
   gitlab:
-    url: http://rct-gl.portal.cbr.ru
-    token: ${GITLAB_TOKEN:changeme}
+    url: http://10.1.5.6/
+    token: ${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}
     webhook-token: ${GITLAB_WEBHOOK_TOKEN:changeme}
   graph-service:
-    url: http://localhost:8090
+    url: http://10.1.5.97:8082/api/review/
 
 spring:
   ai:

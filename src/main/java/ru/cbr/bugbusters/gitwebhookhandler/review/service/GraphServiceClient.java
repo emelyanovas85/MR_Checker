@@ -30,7 +30,7 @@ public class GraphServiceClient {
      * @return список строк — каждая строка представляет контекст одной группы
      */
     public List<String> fetchContexts(ReviewTriggerCommand command) {
-        String url = appProperties.graphService().url() + "/api/graph/contexts";
+        String url = appProperties.graphService().url();
         try {
             List<String> contexts = restClient.post()
                     .uri(url)
@@ -58,6 +58,25 @@ public class GraphServiceClient {
                 cmd.lastCommit()
         );
     }
+
+    private MrContextRequest toRequest2(ReviewTriggerCommand cmd) {
+        return new MrContextRequest(
+                cmd.projectId(),
+                cmd.mrIid(),
+                cmd.sourceBranch(),
+                cmd.targetBranch(),
+                cmd.lastCommit()
+        );
+    }
+
+    /**
+     * DTO запроса к граф-сервису.
+     */
+    public record MrContextRequest2(
+            String namespace,
+            String repo,
+            Integer mrIid
+    ) {}
 
     /**
      * DTO запроса к граф-сервису.
