@@ -12,8 +12,8 @@
 # -i, --identity Путь к приватному SSH-ключу (необязательно)
 # --image Docker-образ MCP-сервера (по умолчанию: mcp/gitlab:latest)
 # --app-dir Каталог на удалённой машине (по умолчанию: ~/gitlab-mcp)
-# --mcp-port Порт MCP-сервера на удалённой машине (по умолчанию: 8081)
-# --gitlab-url URL GitLab API v4 (по умолчанию: https://gitlab.com/api/v4)
+# --mcp-port Порт MCP-сервера на удалённой машине (по умолчанию: 8083)
+# --gitlab-url URL GitLab API v4 (по умолчанию: http://10.1.5.6/api/v4)
 # --token GitLab Personal Access Token (или через GITLAB_PERSONAL_ACCESS_TOKEN)
 # --read-only Запустить сервер в read-only режиме
 # --use-wiki Включить инструменты для wiki
@@ -23,14 +23,15 @@
 # Примеры:
 # ./deploy-gitlab-mcp.sh --token glpat-xxx
 # ./deploy-gitlab-mcp.sh -h 192.168.1.100 -u deploy --token glpat-xxx
-# ./deploy-gitlab-mcp.sh -i ~/.ssh/id_rsa --gitlab-url https://gitlab.company.local/api/v4 --token glpat-xxx
+# ./deploy-gitlab-mcp.sh -i ~/.ssh/id_rsa --gitlab-url http://10.1.5.6/api/v4 --token glpat-xxx
 # ./deploy-gitlab-mcp.sh --read-only --use-wiki --token glpat-xxx
 #
 # Примечание: удалённый хост не имеет доступа в интернет.
-# Docker-образ скачивается/проверяется локально, затем передаётся через SSH
+# Docker-образ mcp/gitlab:latest поддерживает только stdio-транспорт.
+# Для работы со Spring AI (HTTP/SSE) используется supergateway —
+# npx-обёртка, которая проксирует stdio MCP-сервер в HTTP на указанный порт.
+# Образ скачивается/проверяется локально, затем передаётся через SSH
 # (docker save | ssh docker load) без промежуточного файла.
-# На удалённой машине создаются .env и compose-файл, после чего контейнер
-# запускается через docker compose / docker-compose.
 # =============================================================================
 
 set -euo pipefail
@@ -53,7 +54,7 @@ IMAGE_NAME="mcp/gitlab:latest"
 APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
 GITLAB_API_URL="http://10.1.5.6/api/v4"
-GITLAB_PERSONAL_ACCESS_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN:-Wg2zKVFW6ZogLt1D3dHQ}"
+GITLAB_PERSONAL_ACCESS_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN:-}"
 GITLAB_READ_ONLY_MODE="false"
 USE_GITLAB_WIKI="false"
 NO_PULL=false
@@ -156,6 +157,8 @@ docker save "${IMAGE_NAME}" \
 ok "Образ загружен на ${REMOTE_HOST}"
 
 # ── Подготовка env и compose локально ─────────────────────────────────────────
+# Образ mcp/gitlab:latest поддерживает только stdio.
+# supergateway (npx -y supergateway) проксирует stdio MCP -> HTTP.
 WORK_DIR="$(mktemp -d /tmp/gitlab-mcp-deploy-XXXXXX)"
 ENV_FILE="${WORK_DIR}/.env"
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
@@ -182,9 +185,18 @@ services:
       GITLAB_PERSONAL_ACCESS_TOKEN: ${GITLAB_PERSONAL_ACCESS_TOKEN}
       GITLAB_READ_ONLY_MODE: ${GITLAB_READ_ONLY_MODE}
       USE_GITLAB_WIKI: ${USE_GITLAB_WIKI}
+      PORT: ${MCP_PORT}
+    entrypoint:
+      - npx
+      - -y
+      - supergateway
+      - --stdio
+      - node dist/index.js
+      - --port
+      - "${MCP_PORT}"
 EOF_COMPOSE
 
-ok "Локальные .env и docker-compose.yml подготовлены"
+ok "Локальные .env и docker-compose.yml подготовлены (с supergateway)"
 
 # ── Передача файлов на сервер ─────────────────────────────────────────────────
 log "Передача конфигурации на ${REMOTE_HOST}..."
@@ -213,7 +225,7 @@ DOCKER_COMPOSE="${DOCKER_COMPOSE}"
 [[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#\~/}"
 cd "\${APP_DIR}"
 
-[[ ! -f .env           ]] && fail "Не найден .env в \${APP_DIR}"
+[[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
 [[ ! -f docker-compose.yml ]] && fail "Не найден docker-compose.yml в \${APP_DIR}"
 
 # Проверка занятости порта
@@ -239,12 +251,12 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MCP сервера..."
+log "Запуск GitLab MCP сервера через supergateway (stdio → HTTP)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
 log "Проверка статуса контейнера..."
-sleep 3
+sleep 5
 if ! docker ps --filter 'name=gitlab-mcp' --format '{{.Names}}' | grep -q '^gitlab-mcp$'; then
   warn "Контейнер не перешёл в состояние running. Последние логи:"
   eval "\${DOCKER_COMPOSE} logs --tail=100"
@@ -267,8 +279,21 @@ if [[ "\${READY}" != "true" ]]; then
   fail "GitLab MCP не стал доступен"
 fi
 
+# Проверка MCP initialize endpoint
+log "Проверка MCP HTTP endpoint..."
+MCP_RESPONSE=\$(curl -s -X POST http://localhost:\${MCP_PORT}/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
+  --max-time 5 2>/dev/null || echo "CURL_FAILED")
+
+if echo "\${MCP_RESPONSE}" | grep -q '"result"'; then
+  ok "MCP endpoint отвечает корректно"
+else
+  warn "MCP endpoint не ответил ожидаемым образом. Ответ: \${MCP_RESPONSE}"
+  warn "Проверьте логи: docker logs gitlab-mcp --tail=50"
+fi
+
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
-ok "GitLab MCP сервер готов (за \${ELAPSED} сек)"
 echo ""
 eval "\${DOCKER_COMPOSE} ps"
 echo ""
