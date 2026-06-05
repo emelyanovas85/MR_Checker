@@ -84,8 +84,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "${GITLAB_PERSONAL_ACCESS_TOKEN}" ]] && \
-  error "Не задан GitLab token. Используйте --token или переменную окружения GITLAB_PERSONAL_ACCESS_TOKEN"
+# ── Запрос токена если не задан ─────────────────────────────────────────────
+if [[ -z "${GITLAB_PERSONAL_ACCESS_TOKEN}" ]]; then
+  echo -e "${YELLOW}Введите GitLab Personal Access Token:${NC} "
+  read -r -s GITLAB_PERSONAL_ACCESS_TOKEN
+  echo ""
+  [[ -z "${GITLAB_PERSONAL_ACCESS_TOKEN}" ]] && error "Токен не может быть пустым"
+fi
+
 [[ ! "${MCP_PORT}" =~ ^[0-9]+$ ]] && error "Некорректный порт: ${MCP_PORT}"
 
 # ── SSH ControlMaster: одно подключение — один ввод пароля ────────────────────
