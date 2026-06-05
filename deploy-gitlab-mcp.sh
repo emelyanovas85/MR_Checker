@@ -298,10 +298,7 @@ echo ""
 eval "\${DOCKER_COMPOSE} ps"
 echo ""
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN} MCP URL (локально):  http://localhost:\${MCP_PORT}\${NC}"
-echo -e "\${GREEN} MCP URL (по сети):   http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
-echo -e "\${GREEN} Spring AI config:\${NC}"
-echo -e "\${GREEN}   spring.ai.mcp.client.streamable-http.connections.gitlab.url=http://localhost:\${MCP_PORT}\${NC}"
+echo -e "\${GREEN} MCP URL: http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 REMOTE_DEPLOY
 
