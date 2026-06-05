@@ -29,9 +29,9 @@
 # Примечание: удалённый хост не имеет доступа в интернет.
 # Docker-образ mcp/gitlab:latest поддерживает только stdio-транспорт.
 # Для работы со Spring AI (HTTP/SSE) используется supergateway —
-# в качестве base image используется официальный образ
-# ghcr.io/supercorp-ai/supergateway:3.2.0, поверх которого добавляются
-# файлы GitLab MCP Server.
+# в качестве base image используется официальный образ с Docker Hub:
+# supercorp/supergateway:3.2.0 (ghcr.io заблокирован корпоративным прокси)
+# Поверх него добавляются файлы GitLab MCP Server.
 # Готовый образ передаётся на удалённую машину через SSH
 # (docker save | ssh docker load) без промежуточного файла.
 # Это позволяет работать без доступа в интернет на удалённом хосте.
@@ -63,10 +63,10 @@ REMOTE_PORT="22"
 SSH_KEY=""
 IMAGE_NAME="mcp/gitlab:latest"
 BUILT_IMAGE_NAME="mcp/gitlab-http:latest"
-# Официальный образ supergateway v3.2.0 — стабильная версия без бага
-# "Already connected to a transport" при SSE reconnect.
+# Официальный образ supergateway v3.2.0 с Docker Hub — стабильная версия.
+# Docker Hub доступен через корпоративный прокси; ghcr.io заблокирован.
 # Используется как base image вместо npm install -g supergateway.
-SUPERGATEWAY_IMAGE="ghcr.io/supercorp-ai/supergateway:3.2.0"
+SUPERGATEWAY_IMAGE="supercorp/supergateway:3.2.0"
 APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
 GITLAB_API_URL="http://10.1.5.6/api/v4"
@@ -193,7 +193,7 @@ docker cp _gitlab_mcp_extract:/app/. "${BUILD_CTX}/app/" 2>/dev/null \
 docker rm _gitlab_mcp_extract
 
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
-# Официальный образ supergateway v3.2.0 — стабильная версия.
+# Официальный образ supergateway v3.2.0 с Docker Hub — стабильная версия.
 # Используем как base image: supergateway уже установлен и настроен,
 # npm install -g supergateway не требуется.
 FROM ${SUPERGATEWAY_IMAGE}
