@@ -1,1 +1,1 @@
-rootProject.name = "git-webhook-handler"
+rootProject.name = "MR_Checker"
