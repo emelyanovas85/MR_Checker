@@ -37,7 +37,7 @@ class LlmGroupingServiceTest {
     @BeforeEach
     void setUp() throws Exception {
         service = new LlmGroupingService(chatClientBuilder, new ObjectMapper());
-        // Inject grouping prompt via reflection (bypasses @PostConstruct / @Value)
+        // Инжекция промпта через рефлексию (обход @PostConstruct / @Value)
         Field promptField = LlmGroupingService.class.getDeclaredField("groupingPrompt");
         promptField.setAccessible(true);
         promptField.set(service, "Group these files");
@@ -58,11 +58,29 @@ class LlmGroupingServiceTest {
 
     @Test
     void groupFiles_parsesJsonResponse() {
+        // GroupFile: {"path": "...", "status": "...", "fileType": "...", "responsibility": "..."}
+        // @JsonIgnoreProperties(ignoreUnknown=true) — лишние поля будут игнорироваться
         String json = """
                 {
                   "refactoring_groups": [
-                    {"groupName": "Auth", "files": ["AuthService.java"]},
-                    {"groupName": "DB",   "files": ["UserRepo.java"]}
+                    {
+                      "group_name": "Auth",
+                      "reason": "authentication logic",
+                      "files": [
+                        {"path": "AuthService.java", "status": "modified", "file_type": "service", "responsibility": "auth"}
+                      ],
+                      "refactoring_goal": "improve security",
+                      "priority": "high"
+                    },
+                    {
+                      "group_name": "DB",
+                      "reason": "data layer",
+                      "files": [
+                        {"path": "UserRepo.java", "status": "added", "file_type": "repository", "responsibility": "persistence"}
+                      ],
+                      "refactoring_goal": "optimize queries",
+                      "priority": "medium"
+                    }
                   ]
                 }
                 """;
@@ -73,6 +91,8 @@ class LlmGroupingServiceTest {
         assertThat(groups).hasSize(2);
         assertThat(groups.get(0).groupName()).isEqualTo("Auth");
         assertThat(groups.get(1).groupName()).isEqualTo("DB");
+        assertThat(groups.get(0).files()).hasSize(1);
+        assertThat(groups.get(0).files().get(0).path()).isEqualTo("AuthService.java");
     }
 
     @Test
@@ -80,7 +100,15 @@ class LlmGroupingServiceTest {
         String response = """
                 Sure! Here is the grouping:
                 ```json
-                {"refactoring_groups": [{"groupName": "Core", "files": ["Main.java"]}]}
+                {
+                  "refactoring_groups": [{
+                    "group_name": "Core",
+                    "reason": "core logic",
+                    "files": [{"path": "Main.java", "status": "modified", "file_type": "main", "responsibility": "entry point"}],
+                    "refactoring_goal": "cleanup",
+                    "priority": "low"
+                  }]
+                }
                 ```
                 """;
         mockLlmResponse(response);
@@ -89,6 +117,7 @@ class LlmGroupingServiceTest {
 
         assertThat(groups).hasSize(1);
         assertThat(groups.get(0).groupName()).isEqualTo("Core");
+        assertThat(groups.get(0).files().get(0).path()).isEqualTo("Main.java");
     }
 
     @Test
