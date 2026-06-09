@@ -1,9 +1,9 @@
 package ru.cbr.bugbusters.gitwebhookhandler.review;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.service.ReviewAuditService;
@@ -21,6 +21,12 @@ import static org.mockito.Mockito.*;
 /**
  * Unit-тесты оркестратора AI-ревью.
  * Проверяют бизнес-логику без запуска Spring-контекста.
+ *
+ * <p><b>Важно про Executor:</b> нельзя использовать @Mock для Executor, т.к.
+ * MrReviewOrchestrator передаёт его в CompletableFuture.supplyAsync().
+ * Mock молча игнорирует execute(runnable), CompletableFuture никогда не завершается,
+ * и .join() вешает тест навсегда. Вместо этого используется inline-executor
+ * (Runnable::run), который выполняет задачу синхронно в том же потоке.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("MrReviewOrchestrator — unit тесты")
@@ -32,15 +38,27 @@ class MrReviewOrchestratorTest {
     @Mock MarkdownCommentFormatter  markdownCommentFormatter;
     @Mock GitLabNotesPublisher      gitLabNotesPublisher;
     @Mock ReviewAuditService        reviewAuditService;
-    @Mock Executor                  reviewExecutor;
 
-    @InjectMocks
-    MrReviewOrchestrator orchestrator;
+    // НЕ мок — синхронный inline executor, чтобы CompletableFuture.join() не висел
+    private final Executor reviewExecutor = Runnable::run;
+
+    private MrReviewOrchestrator orchestrator;
+
+    @BeforeEach
+    void setUp() {
+        orchestrator = new MrReviewOrchestrator(
+                classContextClient,
+                llmGroupingService,
+                llmReviewService,
+                markdownCommentFormatter,
+                gitLabNotesPublisher,
+                reviewAuditService,
+                reviewExecutor
+        );
+    }
 
     /** Создаёт стандартную тестовую команду запуска ревью. */
     private ReviewTriggerCommand buildCommand() {
-        // ReviewTriggerCommand: Long projectId, Long mrIid, String sourceBranch, String targetBranch,
-        //                       String lastCommit, String mrTitle, String mrUrl, String triggeredBy
         return new ReviewTriggerCommand(
                 1L, 10L, "feat", "main", "abc123",
                 "Test MR", "http://gitlab/mr/10", "testuser");
@@ -50,8 +68,6 @@ class MrReviewOrchestratorTest {
     @DisplayName("Успешный сценарий: публикует комментарий, финализирует ревью")
     void runReview_happyPath_publishesCommentAndCompletesRun() {
         var command = buildCommand();
-        // RefactoringGroup: String groupName, String reason, List<GroupFile> files,
-        //                   String refactoringGoal, String priority
         var group = new RefactoringGroup(
                 "Security",
                 "security concern",
