@@ -39,6 +39,8 @@ class MrReviewOrchestratorTest {
 
     /** Создаёт стандартную тестовую команду запуска ревью. */
     private ReviewTriggerCommand buildCommand() {
+        // ReviewTriggerCommand: Long projectId, Long mrIid, String sourceBranch, String targetBranch,
+        //                       String lastCommit, String mrTitle, String mrUrl, String triggeredBy
         return new ReviewTriggerCommand(
                 1L, 10L, "feat", "main", "abc123",
                 "Test MR", "http://gitlab/mr/10", "testuser");
@@ -48,8 +50,16 @@ class MrReviewOrchestratorTest {
     @DisplayName("Успешный сценарий: публикует комментарий, финализирует ревью")
     void runReview_happyPath_publishesCommentAndCompletesRun() {
         var command = buildCommand();
-        var group   = new RefactoringGroup("Security", List.of(new RefactoringGroup.GroupFile("Foo.java", "modified", "business logic", null)));
-        var result  = GroupReviewResult.success(0, "Security", "Looks good.");
+        // RefactoringGroup: String groupName, String reason, List<GroupFile> files,
+        //                   String refactoringGoal, String priority
+        var group = new RefactoringGroup(
+                "Security",
+                "security concern",
+                List.of(new RefactoringGroup.GroupFile("Foo.java", "modified", "business logic", null)),
+                "improve security",
+                "high"
+        );
+        var result = GroupReviewResult.success(0, "Security", "Looks good.");
 
         when(reviewAuditService.createReviewRun(command)).thenReturn("run-1");
         when(classContextClient.createSession(command)).thenReturn("session-1");
@@ -125,7 +135,6 @@ class MrReviewOrchestratorTest {
                 .thenReturn(List.of());
 
         orchestrator.runReview(command); // создаёт session-A
-        // session-A удалена в finally, поэтому activeSessionByMrKey очищена
         orchestrator.runReview(command); // создаёт session-B
 
         // Обе сессии должны быть удалены в finally

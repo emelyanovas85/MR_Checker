@@ -13,8 +13,10 @@ class MarkdownCommentFormatterTest {
 
     private final MarkdownCommentFormatter formatter = new MarkdownCommentFormatter();
 
+    // ReviewTriggerCommand: Long projectId, Long mrIid, String sourceBranch, String targetBranch,
+    //                       String lastCommit, String mrTitle, String mrUrl, String triggeredBy
     private ReviewTriggerCommand buildCommand(String src, String tgt, String commit, String title) {
-        return new ReviewTriggerCommand(42L, 7L, src, tgt, commit, title, "test-user");
+        return new ReviewTriggerCommand(42L, 7L, src, tgt, commit, title, "http://gitlab/mr/7", "test-user");
     }
 
     @Test
@@ -41,7 +43,8 @@ class MarkdownCommentFormatterTest {
     @Test
     void format_successSection_containsGroupName() {
         var cmd = buildCommand("feat", "main", null, null);
-        var groupResult = new GroupReviewResult(0, true, "Security Group", "All looks good.");
+        // GroupReviewResult: int index, String groupName, boolean success, String reviewText
+        var groupResult = new GroupReviewResult(0, "Security Group", true, "All looks good.");
         var result = formatter.format(cmd, List.of(groupResult));
         assertThat(result).contains("Security Group");
         assertThat(result).contains("✅");
@@ -51,7 +54,7 @@ class MarkdownCommentFormatterTest {
     @Test
     void format_failedSection_showsErrorIcon() {
         var cmd = buildCommand("feat", "main", null, null);
-        var groupResult = new GroupReviewResult(0, false, "Auth Module", "Error occurred.");
+        var groupResult = new GroupReviewResult(0, "Auth Module", false, "Error occurred.");
         var result = formatter.format(cmd, List.of(groupResult));
         assertThat(result).contains("❌");
         assertThat(result).contains("Auth Module");
@@ -68,7 +71,7 @@ class MarkdownCommentFormatterTest {
     @Test
     void format_noGroupName_fallsBackToIndex() {
         var cmd = buildCommand("feat", "main", null, null);
-        var groupResult = new GroupReviewResult(2, true, "", "Review text.");
+        var groupResult = new GroupReviewResult(2, "", true, "Review text.");
         var result = formatter.format(cmd, List.of(groupResult));
         assertThat(result).contains("Group #3");
     }
@@ -76,8 +79,8 @@ class MarkdownCommentFormatterTest {
     @Test
     void format_multipleGroups_allRendered() {
         var cmd = buildCommand("feat", "main", null, null);
-        var g1 = new GroupReviewResult(0, true, "Group A", "OK");
-        var g2 = new GroupReviewResult(1, false, "Group B", "Fail");
+        var g1 = new GroupReviewResult(0, "Group A", true, "OK");
+        var g2 = new GroupReviewResult(1, "Group B", false, "Fail");
         var result = formatter.format(cmd, List.of(g1, g2));
         assertThat(result).contains("Group A").contains("Group B");
         assertThat(result).contains("2 group(s)");
