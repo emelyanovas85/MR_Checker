@@ -5,25 +5,25 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app")
 public record AppProperties(
         GitLabProperties gitlab,
-        GraphServiceProperties graphService,
+        ClassContextProperties classContext,
         AiProperties ai
 ) {
     /**
-     * Настройки GitLab API.
-     * token — Personal Access Token для публикации комментариев в MR.
+     * Настройки GitLab API (для публикации комментариев через gitlab4j).
      */
     public record GitLabProperties(String url, String token) {}
 
     /**
-     * Базовый URL граф-сервиса.
-     * Пример: http://graph-service:8090
+     * Настройки сервиса java-class-context (порт 8084).
+     * url         — базовый URL, например http://10.1.5.97:8084
+     * gitlabToken — PAT для создания сессии ревью (передаётся в CreateSessionRequest)
      */
-    public record GraphServiceProperties(String url) {}
+    public record ClassContextProperties(String url, String gitlabToken) {}
 
     /**
      * Настройки AI.
-     * promptFile — путь к файлу с system prompt (classpath-ресурс).
-     * По умолчанию: classpath:prompts/system-prompt.md
+     * groupingPromptFile — промпт группировки (первый этап).
+     * reviewPromptFile   — промпт ревью группы (второй этап).
      */
-    public record AiProperties(String promptFile) {}
+    public record AiProperties(String groupingPromptFile, String reviewPromptFile) {}
 }

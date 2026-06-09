@@ -13,7 +13,8 @@ public class MarkdownCommentFormatter {
         long failed = results.stream().filter(r -> !r.success()).count();
         StringBuilder sb = new StringBuilder();
         sb.append("## AI Code Review\n\n");
-        sb.append("> Branch: `").append(command.sourceBranch()).append("` &rarr; `").append(command.targetBranch()).append("`  \n");
+        sb.append("> Branch: `").append(command.sourceBranch())
+                .append("` &rarr; `").append(command.targetBranch()).append("`  \n");
         if (command.lastCommit() != null) {
             sb.append("> Commit: `").append(command.lastCommit()).append("`  \n");
         }
@@ -24,7 +25,8 @@ public class MarkdownCommentFormatter {
         sb.append(failed == 0
                 ? "Analysis completed successfully"
                 : "Analysis completed with " + failed + " error(s)");
-        sb.append(" | **").append(results.size()).append(" context group(s)**\n\n---\n\n");
+        sb.append(" | **").append(results.size()).append(" group(s)**\n\n---\n\n");
+
         for (GroupReviewResult result : results) {
             sb.append(formatSection(result)).append("\n");
         }
@@ -33,8 +35,14 @@ public class MarkdownCommentFormatter {
 
     private String formatSection(GroupReviewResult result) {
         String icon = result.success() ? "✅" : "❌";
-        return "<details>\n<summary>" + icon + " <b>Context group #" + (result.index() + 1) + "</b></summary>\n\n"
-                + result.reviewText() + "\n\n</details>\n";
+        // Используем groupName из результата (содержательное имя группы из LLM)
+        String title = result.groupName() != null && !result.groupName().isBlank()
+                ? result.groupName()
+                : "Group #" + (result.index() + 1);
+        return "<details>\n<summary>"
+                + icon + " <b>" + escape(title) + "</b></summary>\n\n"
+                + result.reviewText()
+                + "\n\n</details>\n";
     }
 
     private String escape(String value) {

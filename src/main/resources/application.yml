@@ -6,9 +6,6 @@ spring:
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://chat.ehd-zr.cbr.ru}
-      # OPENAI_API_KEY задаётся через переменную окружения в runtime
-      # или через application-local.yml (локальный профиль).
-      # placeholder 'dummy' позволяет приложению стартовать без реального ключа.
       api-key: ${OPENAI_API_KEY:Bearer sk-09fd660cdc8640ac861fe85a16d2d2f1}
       chat:
         options:
@@ -38,22 +35,14 @@ springdoc:
     tags-sorter: alpha
     display-request-duration: true
 
-# Настройки подписки на webhook-distributor
-# (параметры WebhookClientProperties из библиотеки webhook-distributor-client)
 webhook:
   client:
-    # Базовый URL webhook-distributor
     server-url: ${WEBHOOK_DISTRIBUTOR_URL:http://10.1.5.97:8081}
-    # Уникальный идентификатор этого сервиса среди всех подписчиков
     subscriber-id: MR_Checker
-    # Источник webhook-событий (должен совпадать с source в webhook-distributor)
     source: gitlab
-    # Логическая метка этого обработчика (сервер её не вызывает по HTTP)
     target-endpoint: gitlab.merge-request
-    # Фильтр типов событий — принимаем только Merge Request Hook
     event-type-filter:
       - Merge Request Hook
-    # Запрашивать пропущенные события при переподключении
     missed-events-on-reconnect: true
     missed-events-batch-size: 50
     reconnect-delay-ms: 3000
@@ -63,11 +52,14 @@ app:
   gitlab:
     url: ${GITLAB_URL:http://10.1.5.6/}
     token: ${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}
-  graph-service:
-    # Базовый URL граф-сервиса
-    url: ${GRAPH_SERVICE_URL:http://10.1.5.97:8082/api/review/}
+  class-context:
+    # Базовый URL сервиса java-class-context-deploy (порт 8084)
+    url: ${CLASS_CONTEXT_URL:http://10.1.5.97:8084}
+    # GitLab PAT для создания сессии ревью в сервисе 8084
+    # По умолчанию используем тот же токен, что и для публикации комментариев
+    gitlab-token: ${CLASS_CONTEXT_GITLAB_TOKEN:${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}}
   ai:
-    # Путь к файлу с system prompt. Можно переопределить через переменную окружения
-    # или указать file:-путь для монтирования промпта снаружи контейнера.
-    # Пример: APP_AI_PROMPT_FILE=file:/etc/mr-checker/system-prompt.md
-    prompt-file: ${APP_AI_PROMPT_FILE:classpath:prompts/system-prompt.md}
+    # Промпт первого этапа: группировка изменённых файлов по refactoring_groups
+    grouping-prompt-file: ${APP_AI_GROUPING_PROMPT_FILE:classpath:prompts/grouping-prompt.md}
+    # Промпт второго этапа: ревью одной группы
+    review-prompt-file: ${APP_AI_REVIEW_PROMPT_FILE:classpath:prompts/system-prompt.md}
