@@ -10,7 +10,6 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 
-
 @Configuration
 public class OpenApiConfig {
 
@@ -18,23 +17,29 @@ public class OpenApiConfig {
     public OpenAPI customOpenAPI() {
         return new OpenAPI()
                 .info(new Info()
-                        .title("""
-                                Webhook Handler API
-                                """)
+                        .title("MR Checker — AI Code Review Bot")
                         .description("""
-                                 <img src="/images/img.png" alt="А шо ты хотел от тракториста?" width="100"/>
-                                
-                                
-                                ## Универсальный обработчик webhook-ов от GitLab и GitHub.
+                                ## MR Checker
 
-                                **GitLab** использует plain-text токен в заголовке `X-Gitlab-Token`.
+                                Spring Boot-сервис автоматического AI-ревью Merge Request'ов в GitLab.
 
-                                **GitHub** использует HMAC-SHA256 подпись в заголовке `X-Hub-Signature-256`.
+                                ### Как работает
+                                1. Подписывается на события GitLab через **webhook-distributor** (SSE).
+                                2. При открытии/переоткрытии/апруве MR запускает асинхронный flow:
+                                   - создаёт сессию в сервисе **java-class-context** (port 8084)
+                                   - получает структуру изменённых файлов
+                                   - LLM группирует файлы (`grouping-prompt.md`)
+                                   - параллельное LLM-ревью каждой группы (`system-prompt.md`) с тулами доступа к исходному коду
+                                   - публикует структурированный markdown-комментарий в GitLab MR
+
+                                ### Actuator
+                                - `GET /actuator/health` — состояние сервиса
+                                - `GET /actuator/info`   — мета-информация
                                 """)
                         .version("1.0.0")
                         .contact(new Contact()
-                                .name("Webhook Handler")
-                                .url("https://github.com/emelyanovas85/git-webhook-handler"))
+                                .name("BugBusters")
+                                .url("https://github.com/emelyanovas85/MR_Checker"))
                         .license(new License()
                                 .name("MIT")
                                 .url("https://opensource.org/licenses/MIT")))

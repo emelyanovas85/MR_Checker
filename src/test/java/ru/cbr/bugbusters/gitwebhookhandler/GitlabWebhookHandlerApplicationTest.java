@@ -1,13 +1,5 @@
 package ru.cbr.bugbusters.gitwebhookhandler;
 
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-
-@SpringBootTest
-class GitlabWebhookHandlerApplicationTest {
-
-    @Test
-    void contextLoads() {
-        // Verifies that the Spring context starts up without errors
-    }
-}
+// Контекстный тест намеренно удалён: запуск полного Spring-контекста требует
+// реальных внешних сервисов (webhook-distributor, class-context, LLM).
+// Используйте unit-тесты в пакетах review и webhook.
