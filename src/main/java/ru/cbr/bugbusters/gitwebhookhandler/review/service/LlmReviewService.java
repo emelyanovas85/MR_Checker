@@ -19,6 +19,10 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Каждый вызов создаёт изолированный ChatClient с тулами сервиса 8084:
  * LLM может запрашивать исходный код через {@link ClassContextToolsProvider}.
+ *
+ * <p>Перед вызовом LLM применяется глобальный rate-limit через
+ * {@link LlmRateLimiter#acquire()} (не чаще 0,45 запроса/с ≈ 2,2 с между вызовами).
+ * Rate-limit распространяется на все вызовы LLM в приложении (группировка + ревью).
  */
 @Slf4j
 @Service
@@ -26,7 +30,6 @@ import java.nio.charset.StandardCharsets;
 public class LlmReviewService {
 
     private final ChatClient.Builder chatClientBuilder;
-    // ObjectProvider позволяет получать prototype-бины (по одному на каждую группу)
     private final ObjectProvider<ClassContextToolsProvider> toolsProviderFactory;
 
     @Value("${app.ai.review-prompt-file:classpath:prompts/system-prompt.md}")
@@ -43,8 +46,8 @@ public class LlmReviewService {
     /**
      * Выполняет ревью одной группы рефакторинга.
      *
-     * @param index   порядковый номер группы (для логирования и отображения)
-     * @param group   группа рефакторинга из первого этапа
+     * @param index     порядковый номер группы (для логирования и отображения)
+     * @param group     группа рефакторинга из первого этапа
      * @param sessionId sessionId сессии 8084 (для тулов)
      * @return результат ревью с именем группы
      */
@@ -53,6 +56,7 @@ public class LlmReviewService {
         try {
             ClassContextToolsProvider tools = toolsProviderFactory.getObject().withSession(sessionId);
 
+            LlmRateLimiter.acquire(); // не чаще 0.45 req/s — общий лимит для всего приложения
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(reviewPrompt)

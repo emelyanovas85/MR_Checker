@@ -5,11 +5,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.core.io.ByteArrayResource;
 import ru.cbr.bugbusters.gitwebhookhandler.review.domain.RefactoringGroup;
 import ru.cbr.bugbusters.gitwebhookhandler.review.service.LlmGroupingService;
+import ru.cbr.bugbusters.gitwebhookhandler.review.service.LlmRateLimiter;
 
 import java.lang.reflect.Field;
 import java.util.List;
@@ -18,6 +20,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit-тесты LlmGroupingService.
+ * LlmRateLimiter.acquire() мокируется через MockedStatic — тесты не ждут 2.2с.
+ */
 @ExtendWith(MockitoExtension.class)
 class LlmGroupingServiceTest {
 
@@ -47,19 +53,22 @@ class LlmGroupingServiceTest {
         resourceField.set(service, new ByteArrayResource("Group these files".getBytes()));
     }
 
-    private void mockLlmResponse(String json) {
+    /** Настраивает цепочку мок-вызовов ChatClient и отключает rate-limiter на время теста. */
+    private MockedStatic<LlmRateLimiter> mockLlmResponse(String json) {
         when(chatClientBuilder.build()).thenReturn(chatClient);
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(userSpec);
         when(userSpec.call()).thenReturn(callSpec);
         when(callSpec.content()).thenReturn(json);
+
+        MockedStatic<LlmRateLimiter> rateLimiterMock = mockStatic(LlmRateLimiter.class);
+        rateLimiterMock.when(LlmRateLimiter::acquire).thenAnswer(inv -> null); // не ждём
+        return rateLimiterMock;
     }
 
     @Test
     void groupFiles_parsesJsonResponse() {
-        // GroupFile: {"path": "...", "status": "...", "fileType": "...", "responsibility": "..."}
-        // @JsonIgnoreProperties(ignoreUnknown=true) — лишние поля будут игнорироваться
         String json = """
                 {
                   "refactoring_groups": [
@@ -84,15 +93,15 @@ class LlmGroupingServiceTest {
                   ]
                 }
                 """;
-        mockLlmResponse(json);
+        try (MockedStatic<LlmRateLimiter> ignored = mockLlmResponse(json)) {
+            List<RefactoringGroup> groups = service.groupFiles(List.of("file1 content"));
 
-        List<RefactoringGroup> groups = service.groupFiles(List.of("file1 content"));
-
-        assertThat(groups).hasSize(2);
-        assertThat(groups.get(0).groupName()).isEqualTo("Auth");
-        assertThat(groups.get(1).groupName()).isEqualTo("DB");
-        assertThat(groups.get(0).files()).hasSize(1);
-        assertThat(groups.get(0).files().get(0).path()).isEqualTo("AuthService.java");
+            assertThat(groups).hasSize(2);
+            assertThat(groups.get(0).groupName()).isEqualTo("Auth");
+            assertThat(groups.get(1).groupName()).isEqualTo("DB");
+            assertThat(groups.get(0).files()).hasSize(1);
+            assertThat(groups.get(0).files().get(0).path()).isEqualTo("AuthService.java");
+        }
     }
 
     @Test
@@ -111,17 +120,18 @@ class LlmGroupingServiceTest {
                 }
                 ```
                 """;
-        mockLlmResponse(response);
+        try (MockedStatic<LlmRateLimiter> ignored = mockLlmResponse(response)) {
+            List<RefactoringGroup> groups = service.groupFiles(List.of("some file"));
 
-        List<RefactoringGroup> groups = service.groupFiles(List.of("some file"));
-
-        assertThat(groups).hasSize(1);
-        assertThat(groups.get(0).groupName()).isEqualTo("Core");
-        assertThat(groups.get(0).files().get(0).path()).isEqualTo("Main.java");
+            assertThat(groups).hasSize(1);
+            assertThat(groups.get(0).groupName()).isEqualTo("Core");
+            assertThat(groups.get(0).files().get(0).path()).isEqualTo("Main.java");
+        }
     }
 
     @Test
     void groupFiles_emptyInput_returnsEmptyList() {
+        // RateLimiter вообще не должен вызываться — нет смысла мокировать
         List<RefactoringGroup> groups = service.groupFiles(List.of());
         assertThat(groups).isEmpty();
         verifyNoInteractions(chatClientBuilder);
@@ -129,15 +139,17 @@ class LlmGroupingServiceTest {
 
     @Test
     void groupFiles_emptyLlmResponse_returnsEmptyList() {
-        mockLlmResponse("");
-        List<RefactoringGroup> groups = service.groupFiles(List.of("file content"));
-        assertThat(groups).isEmpty();
+        try (MockedStatic<LlmRateLimiter> ignored = mockLlmResponse("")) {
+            List<RefactoringGroup> groups = service.groupFiles(List.of("file content"));
+            assertThat(groups).isEmpty();
+        }
     }
 
     @Test
     void groupFiles_invalidJson_returnsEmptyList() {
-        mockLlmResponse("not a json at all");
-        List<RefactoringGroup> groups = service.groupFiles(List.of("file content"));
-        assertThat(groups).isEmpty();
+        try (MockedStatic<LlmRateLimiter> ignored = mockLlmResponse("not a json at all")) {
+            List<RefactoringGroup> groups = service.groupFiles(List.of("file content"));
+            assertThat(groups).isEmpty();
+        }
     }
 }

@@ -23,6 +23,9 @@ import java.util.regex.Pattern;
  *
  * <p>Принимает список markdown-контекстов файлов от сервиса 8084,
  * отправляет их в LLM с промптом группировки и парсит JSON-ответ.
+ *
+ * <p>Перед каждым вызовом LLM выполняет глобальный rate-limit через
+ * {@link LlmRateLimiter#acquire()} (не чаще 0,45 запроса/с ≈ 2,2 с между вызовами).
  */
 @Slf4j
 @Service
@@ -59,6 +62,7 @@ public class LlmGroupingService {
         log.info("Запускаем LLM группировку для {} файлов", fileStructures.size());
 
         try {
+            LlmRateLimiter.acquire(); // не чаще 0.45 req/s
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(groupingPrompt)
@@ -117,7 +121,6 @@ public class LlmGroupingService {
         if (m.find()) {
             return m.group(1).trim();
         }
-        // Ищем первую { или [ и возвращаем от неё до конца строки
         int start = response.indexOf('{');
         if (start < 0) start = response.indexOf('[');
         return start >= 0 ? response.substring(start).trim() : response.trim();
