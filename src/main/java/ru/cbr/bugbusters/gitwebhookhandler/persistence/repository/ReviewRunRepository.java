@@ -5,43 +5,22 @@ import org.springframework.stereotype.Repository;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.entity.ReviewRunEntity;
 
 import java.util.List;
-import java.util.Optional;
 
 /**
- * Репозиторий Spring Data JPA для запусков AI-ревью.
- *
- * <p>Основная точка чтения истории ревью для будущего UI:
- * можно получить все прогоны по MR или последний прогон для конкретного MR.
- *
- * @see ReviewRunEntity
+ * Репозиторий для работы с историей запусков AI-ревью.
  */
 @Repository
 public interface ReviewRunRepository extends JpaRepository<ReviewRunEntity, String> {
 
-    /**
-     * Возвращает все запуски ревью для заданного MR,
-     * отсортированные по времени начала (новейшие первыми).
-     *
-     * @param projectId ID проекта GitLab
-     * @param mrIid     IID merge request
-     * @return список запусков ревью
-     */
+    /** Запуски для конкретного MR, новые первые. */
     List<ReviewRunEntity> findByProjectIdAndMrIidOrderByStartedAtDesc(Long projectId, Long mrIid);
 
-    /**
-     * Возвращает последний запуск ревью для заданного MR.
-     *
-     * @param projectId ID проекта GitLab
-     * @param mrIid     IID merge request
-     * @return Optional с последним запуском или пустой
-     */
-    Optional<ReviewRunEntity> findTopByProjectIdAndMrIidOrderByStartedAtDesc(Long projectId, Long mrIid);
+    /** Запуски по проекту, новые первые. */
+    List<ReviewRunEntity> findByProjectIdOrderByStartedAtDesc(Long projectId);
 
-    /**
-     * Возвращает все запуски ревью с указанным статусом.
-     *
-     * @param status статус (RUNNING, SUCCESS, ERROR)
-     * @return список запусков
-     */
+    /** Запуски по статусу, новые первые. */
     List<ReviewRunEntity> findByStatusOrderByStartedAtDesc(ReviewRunEntity.ReviewStatus status);
+
+    /** Последние 50 запусков без фильтра. */
+    List<ReviewRunEntity> findTop50ByOrderByStartedAtDesc();
 }
