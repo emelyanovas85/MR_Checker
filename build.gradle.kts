@@ -46,9 +46,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
-    // JPA + H2 (file-based persistence, данные переживают рестарт контейнера)
+    // JPA + H2 — implementation (не runtimeOnly!) т.к. H2TcpServerConfig использует org.h2.tools.Server при компиляции
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
-    runtimeOnly("com.h2database:h2")
+    implementation("com.h2database:h2")
 
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
