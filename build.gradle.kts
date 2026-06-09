@@ -55,6 +55,9 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.8")
 
+    // Guava — RateLimiter для ограничения частоты запросов к LLM (LlmRateLimiter)
+    implementation("com.google.guava:guava:33.4.8-jre")
+
     // webhook-distributor-client — из корпоративного Artifactory CBR
     implementation("bugbusters.modules:webhook-distributor-client:1.0.0")
 
