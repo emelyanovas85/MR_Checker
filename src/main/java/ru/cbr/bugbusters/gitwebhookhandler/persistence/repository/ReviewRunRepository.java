@@ -5,6 +5,7 @@ import org.springframework.stereotype.Repository;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.entity.ReviewRunEntity;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Репозиторий для работы с историей запусков AI-ревью.
@@ -14,6 +15,9 @@ public interface ReviewRunRepository extends JpaRepository<ReviewRunEntity, Stri
 
     /** Запуски для конкретного MR, новые первые. */
     List<ReviewRunEntity> findByProjectIdAndMrIidOrderByStartedAtDesc(Long projectId, Long mrIid);
+
+    /** Последний запуск для конкретного MR. */
+    Optional<ReviewRunEntity> findTopByProjectIdAndMrIidOrderByStartedAtDesc(Long projectId, Long mrIid);
 
     /** Запуски по проекту, новые первые. */
     List<ReviewRunEntity> findByProjectIdOrderByStartedAtDesc(Long projectId);
