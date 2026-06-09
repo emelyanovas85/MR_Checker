@@ -21,8 +21,8 @@ import java.nio.charset.StandardCharsets;
  * LLM может запрашивать исходный код через {@link ClassContextToolsProvider}.
  *
  * <p>Перед вызовом LLM применяется глобальный rate-limit через
- * {@link LlmRateLimiter#acquire()} (не чаще 0,45 запроса/с ≈ 2,2 с между вызовами).
- * Rate-limit распространяется на все вызовы LLM в приложении (группировка + ревью).
+ * инжектируемый {@link LlmRateLimiter#acquire()} (0,45 req/s ≈ 2,2с между вызовами).
+ * Rate-limit общий для всех LLM-вызовов в приложении (группировка + ревью).
  */
 @Slf4j
 @Service
@@ -31,6 +31,7 @@ public class LlmReviewService {
 
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectProvider<ClassContextToolsProvider> toolsProviderFactory;
+    private final LlmRateLimiter rateLimiter;
 
     @Value("${app.ai.review-prompt-file:classpath:prompts/system-prompt.md}")
     private Resource reviewPromptResource;
@@ -46,17 +47,17 @@ public class LlmReviewService {
     /**
      * Выполняет ревью одной группы рефакторинга.
      *
-     * @param index     порядковый номер группы (для логирования и отображения)
+     * @param index     порядковый номер группы
      * @param group     группа рефакторинга из первого этапа
-     * @param sessionId sessionId сессии 8084 (для тулов)
-     * @return результат ревью с именем группы
+     * @param sessionId sessionId сессии 8084
+     * @return результат ревью
      */
     public GroupReviewResult review(int index, RefactoringGroup group, String sessionId) {
         String groupName = group.groupName() != null ? group.groupName() : "Group #" + (index + 1);
         try {
             ClassContextToolsProvider tools = toolsProviderFactory.getObject().withSession(sessionId);
 
-            LlmRateLimiter.acquire(); // не чаще 0.45 req/s — общий лимит для всего приложения
+            rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(reviewPrompt)
@@ -76,19 +77,11 @@ public class LlmReviewService {
     private String buildUserMessage(int index, RefactoringGroup group) {
         StringBuilder sb = new StringBuilder();
         sb.append("## Группа рефакторинга #").append(index + 1).append(": ").append(group.groupName()).append("\n\n");
-
-        if (group.reason() != null) {
-            sb.append("**Причина группировки:** ").append(group.reason()).append("\n\n");
-        }
-        if (group.refactoringGoal() != null) {
-            sb.append("**Цель рефакторинга:** ").append(group.refactoringGoal()).append("\n\n");
-        }
-        if (group.priority() != null) {
-            sb.append("**Приоритет:** ").append(group.priority()).append("\n\n");
-        }
-
+        if (group.reason() != null) sb.append("**Причина:** ").append(group.reason()).append("\n\n");
+        if (group.refactoringGoal() != null) sb.append("**Цель:** ").append(group.refactoringGoal()).append("\n\n");
+        if (group.priority() != null) sb.append("**Приоритет:** ").append(group.priority()).append("\n\n");
         if (group.files() != null && !group.files().isEmpty()) {
-            sb.append("**Файлы группы:**\n");
+            sb.append("**Файлы:**\n");
             for (RefactoringGroup.GroupFile file : group.files()) {
                 sb.append("- `").append(file.path()).append("`");
                 if (file.status() != null) sb.append(" [").append(file.status()).append("]");
@@ -97,9 +90,7 @@ public class LlmReviewService {
             }
             sb.append("\n");
         }
-
-        sb.append("Выполни ревью данной группы. Используй доступные инструменты для получения ");
-        sb.append("исходного кода файлов и их зависимостей через сервис java-class-context.");
+        sb.append("Выполни ревью. Используй доступные инструменты для получения исходного кода.");
         return sb.toString();
     }
 }

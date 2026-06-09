@@ -24,8 +24,8 @@ import java.util.regex.Pattern;
  * <p>Принимает список markdown-контекстов файлов от сервиса 8084,
  * отправляет их в LLM с промптом группировки и парсит JSON-ответ.
  *
- * <p>Перед каждым вызовом LLM выполняет глобальный rate-limit через
- * {@link LlmRateLimiter#acquire()} (не чаще 0,45 запроса/с ≈ 2,2 с между вызовами).
+ * <p>Перед каждым вызовом LLM применяется глобальный rate-limit через
+ * инжектируемый {@link LlmRateLimiter#acquire()} (0,45 req/s ≈ 2,2с между вызовами).
  */
 @Slf4j
 @Service
@@ -34,6 +34,7 @@ public class LlmGroupingService {
 
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectMapper objectMapper;
+    private final LlmRateLimiter rateLimiter;
 
     @Value("${app.ai.grouping-prompt-file:classpath:prompts/grouping-prompt.md}")
     private Resource groupingPromptResource;
@@ -62,7 +63,7 @@ public class LlmGroupingService {
         log.info("Запускаем LLM группировку для {} файлов", fileStructures.size());
 
         try {
-            LlmRateLimiter.acquire(); // не чаще 0.45 req/s
+            rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(groupingPrompt)
@@ -92,9 +93,6 @@ public class LlmGroupingService {
         return sb.toString();
     }
 
-    /**
-     * Парсит JSON из ответа LLM. Ответ может содержать обёртку в markdown-блоке ```json ... ```.
-     */
     private List<RefactoringGroup> parseGroupingResponse(String response) {
         String json = extractJson(response);
         try {
@@ -112,9 +110,6 @@ public class LlmGroupingService {
         }
     }
 
-    /**
-     * Извлекает JSON-строку из ответа LLM, убирая возможную markdown-обёртку ```json ... ```.
-     */
     private static String extractJson(String response) {
         Pattern fence = Pattern.compile("```(?:json)?\\s*(\\{.*}|\\[.*])", Pattern.DOTALL);
         Matcher m = fence.matcher(response);
