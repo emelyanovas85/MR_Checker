@@ -1,8 +1,9 @@
 package ru.cbr.bugbusters.gitwebhookhandler.webhook.domain;
 
+/**
+ * Информация о пользователе GitLab из webhook payload.
+ */
 public record UserInfo(
-        Long id,
-        String name,
         String username
 ) {
 }

@@ -1,0 +1,51 @@
+# Docker Compose для MR_Checker с persistent H2 storage.
+# Данные БД хранятся в named volume mr-checker-data и переживают:
+#   - docker compose stop / start
+#   - docker compose down / up  (БЕЗ флага -v)
+#   - пересборку образа
+#
+# ВНИМАНИЕ: docker compose down -v удалит volume и все данные БД!
+
+services:
+  mr-checker:
+    image: ${DOCKER_IMAGE:-mr-checker:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mr-checker
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8081}:8081"
+      - "${H2_TCP_PORT:-9092}:9092"   # H2 TCP Server для DBeaver / IntelliJ
+    volumes:
+      - mr-checker-data:/data          # Persistent H2 database storage
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
+      # H2: файлы БД хранятся в /data внутри volume
+      H2_DB_PATH: /data/h2/mr-checker
+      H2_TCP_PORT: 9092
+      # OpenAI
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://chat.ehd-zr.cbr.ru}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-Qwen/Qwen3.5-397B-A17B-GPTQ-Int4}
+      # GitLab
+      GITLAB_URL: ${GITLAB_URL:-http://10.1.5.6/}
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+      # java-class-context service
+      CLASS_CONTEXT_URL: ${CLASS_CONTEXT_URL:-http://10.1.5.97:8084}
+      CLASS_CONTEXT_GITLAB_TOKEN: ${CLASS_CONTEXT_GITLAB_TOKEN:-${GITLAB_TOKEN}}
+      # webhook-distributor
+      WEBHOOK_DISTRIBUTOR_URL: ${WEBHOOK_DISTRIBUTOR_URL:-http://10.1.5.97:8081}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# Named volume — данные живут вне контейнера.
+# Путь на хосте управляется Docker Engine (обычно /var/lib/docker/volumes/).
+# Для конкретного bind mount замените на: driver: local + device: /host/path
+volumes:
+  mr-checker-data:
+    name: mr-checker-data

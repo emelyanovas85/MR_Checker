@@ -3,6 +3,33 @@ spring:
     name: git-webhook-handler
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
+
+  # ───────────────────────────────────────────
+  # H2 file-based БД (данные переживают рестарт контейнера)
+  # Путь задаётся через переменную H2_DB_PATH;
+  # дефолт — /data/h2/mr-checker (монтируется как Docker volume).
+  # ───────────────────────────────────────────
+  datasource:
+    url: jdbc:h2:file:${H2_DB_PATH:/data/h2/mr-checker};AUTO_SERVER=FALSE;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: ${H2_USER:sa}
+    password: ${H2_PASSWORD:}
+
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+  # H2 web-консоль — только для профилей local/dev, в prod отключена
+  h2:
+    console:
+      enabled: false
+      path: /h2-console
+
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://chat.ehd-zr.cbr.ru}
@@ -48,18 +75,20 @@ webhook:
     reconnect-delay-ms: 3000
     max-reconnect-delay-ms: 30000
 
+# H2 TCP-сервер для внешних клиентов (DBeaver, IntelliJ Database)
+# Активен только вне тестового профиля (см. H2TcpServerConfig)
+h2:
+  tcp-server:
+    port: ${H2_TCP_PORT:9092}
+    allowed-hosts: localhost,127.0.0.1
+
 app:
   gitlab:
     url: ${GITLAB_URL:http://10.1.5.6/}
     token: ${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}
   class-context:
-    # Базовый URL сервиса java-class-context-deploy (порт 8084)
     url: ${CLASS_CONTEXT_URL:http://10.1.5.97:8084}
-    # GitLab PAT для создания сессии ревью в сервисе 8084
-    # По умолчанию используем тот же токен, что и для публикации комментариев
     gitlab-token: ${CLASS_CONTEXT_GITLAB_TOKEN:${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}}
   ai:
-    # Промпт первого этапа: группировка изменённых файлов по refactoring_groups
     grouping-prompt-file: ${APP_AI_GROUPING_PROMPT_FILE:classpath:prompts/grouping-prompt.md}
-    # Промпт второго этапа: ревью одной группы
     review-prompt-file: ${APP_AI_REVIEW_PROMPT_FILE:classpath:prompts/system-prompt.md}

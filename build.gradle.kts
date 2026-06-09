@@ -20,7 +20,6 @@ configurations {
 }
 
 repositories {
-    // Корпоративный Artifactory CBR — dev-снапшоты и релизы
     maven {
         name = "office_dev"
         url = uri("http://10.1.5.6:8882/artifactory/gradle-dev")
@@ -46,6 +45,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+
+    // JPA + H2 (file-based persistence, данные переживают рестарт контейнера)
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    runtimeOnly("com.h2database:h2")
 
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")

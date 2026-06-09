@@ -1,15 +1,15 @@
-# Локальный профиль — переопределяет значения для разработки
-# Не коммитить реальные ключи!
-app:
-  gitlab:
-    url: http://10.1.5.6/
-    token: ${GITLAB_TOKEN:Wg2zKVFW6ZogLt1D3dHQ}
-    webhook-token: ${GITLAB_WEBHOOK_TOKEN:changeme}
-  graph-service:
-    url: http://10.1.5.97:8082/api/review/
-
+# Локальный профиль для разработки
+# H2 хранится в домашней директории разработчика
 spring:
-  ai:
-    openai:
-      api-key: ${OPENAI_API_KEY:dummy}
-      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+  datasource:
+    url: jdbc:h2:file:${H2_DB_PATH:${user.home}/.mr-checker/db/mr-checker};AUTO_SERVER=FALSE;DB_CLOSE_ON_EXIT=FALSE
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+# Подключение из DBeaver / IntelliJ Database:
+#   Тип:      H2 Server
+#   JDBC URL: jdbc:h2:tcp://localhost:9092/~/.mr-checker/db/mr-checker
+#   User:     sa
+#   Password: (пусто)

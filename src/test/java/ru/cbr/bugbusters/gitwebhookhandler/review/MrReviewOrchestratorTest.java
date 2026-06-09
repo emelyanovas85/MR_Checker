@@ -1,10 +1,12 @@
 package ru.cbr.bugbusters.gitwebhookhandler.review;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import ru.cbr.bugbusters.gitwebhookhandler.persistence.service.ReviewAuditService;
 import ru.cbr.bugbusters.gitwebhookhandler.review.api.ReviewTriggerCommand;
 import ru.cbr.bugbusters.gitwebhookhandler.review.domain.GroupReviewResult;
 import ru.cbr.bugbusters.gitwebhookhandler.review.domain.RefactoringGroup;
@@ -16,29 +18,40 @@ import java.util.concurrent.Executor;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit-тесты оркестратора AI-ревью.
+ * Проверяют бизнес-логику без запуска Spring-контекста.
+ */
 @ExtendWith(MockitoExtension.class)
+@DisplayName("MrReviewOrchestrator — unit тесты")
 class MrReviewOrchestratorTest {
 
-    @Mock ClassContextClient classContextClient;
-    @Mock LlmGroupingService llmGroupingService;
-    @Mock LlmReviewService llmReviewService;
-    @Mock MarkdownCommentFormatter markdownCommentFormatter;
-    @Mock GitLabNotesPublisher gitLabNotesPublisher;
-    @Mock Executor reviewExecutor;
+    @Mock ClassContextClient        classContextClient;
+    @Mock LlmGroupingService        llmGroupingService;
+    @Mock LlmReviewService          llmReviewService;
+    @Mock MarkdownCommentFormatter  markdownCommentFormatter;
+    @Mock GitLabNotesPublisher      gitLabNotesPublisher;
+    @Mock ReviewAuditService        reviewAuditService;
+    @Mock Executor                  reviewExecutor;
 
     @InjectMocks
     MrReviewOrchestrator orchestrator;
 
+    /** Создаёт стандартную тестовую команду запуска ревью. */
     private ReviewTriggerCommand buildCommand() {
-        return new ReviewTriggerCommand(1L, 10L, "feat", "main", "abc", "Test MR", "user");
+        return new ReviewTriggerCommand(
+                1L, 10L, "feat", "main", "abc123",
+                "Test MR", "http://gitlab/mr/10", "testuser");
     }
 
     @Test
-    void runReview_happyPath_publishesComment() {
+    @DisplayName("Успешный сценарий: публикует комментарий, финализирует ревью")
+    void runReview_happyPath_publishesCommentAndCompletesRun() {
         var command = buildCommand();
-        var group = new RefactoringGroup("Security", List.of("Foo.java"));
-        var result = new GroupReviewResult(0, true, "Security", "Looks good.");
+        var group   = new RefactoringGroup("Security", List.of(new RefactoringGroup.GroupFile("Foo.java", "modified", "business logic", null)));
+        var result  = GroupReviewResult.success(0, "Security", "Looks good.");
 
+        when(reviewAuditService.createReviewRun(command)).thenReturn("run-1");
         when(classContextClient.createSession(command)).thenReturn("session-1");
         when(classContextClient.fetchStructures("session-1")).thenReturn(List.of("file context"));
         when(llmGroupingService.groupFiles(anyList())).thenReturn(List.of(group));
@@ -48,24 +61,30 @@ class MrReviewOrchestratorTest {
         orchestrator.runReview(command);
 
         verify(gitLabNotesPublisher).postNote(1L, 10L, "## AI Review");
+        verify(reviewAuditService).completeReviewRun(eq("run-1"), eq("## AI Review"), anyList());
         verify(classContextClient).deleteSession("session-1");
     }
 
     @Test
-    void runReview_emptyFileStructures_postsWarningNote() {
+    @DisplayName("Пустые файловые структуры: публикует предупреждение, статус ERROR")
+    void runReview_emptyFileStructures_postsWarningNoteAndFailsRun() {
         var command = buildCommand();
+        when(reviewAuditService.createReviewRun(command)).thenReturn("run-2");
         when(classContextClient.createSession(command)).thenReturn("session-2");
         when(classContextClient.fetchStructures("session-2")).thenReturn(List.of());
 
         orchestrator.runReview(command);
 
         verify(gitLabNotesPublisher).postNote(eq(1L), eq(10L), contains("не вернул данных"));
+        verify(reviewAuditService).failReviewRun(eq("run-2"), anyString());
         verify(classContextClient).deleteSession("session-2");
     }
 
     @Test
-    void runReview_emptyGroups_postsWarningNote() {
+    @DisplayName("Пустые группы: публикует предупреждение, статус ERROR")
+    void runReview_emptyGroups_postsWarningNoteAndFailsRun() {
         var command = buildCommand();
+        when(reviewAuditService.createReviewRun(command)).thenReturn("run-3");
         when(classContextClient.createSession(command)).thenReturn("session-3");
         when(classContextClient.fetchStructures("session-3")).thenReturn(List.of("file"));
         when(llmGroupingService.groupFiles(anyList())).thenReturn(List.of());
@@ -73,37 +92,43 @@ class MrReviewOrchestratorTest {
         orchestrator.runReview(command);
 
         verify(gitLabNotesPublisher).postNote(eq(1L), eq(10L), contains("не удалось сформировать группы"));
+        verify(reviewAuditService).failReviewRun(eq("run-3"), anyString());
         verify(classContextClient).deleteSession("session-3");
     }
 
     @Test
-    void runReview_exceptionDuringReview_sessionIsAlwaysTerminated() {
+    @DisplayName("Исключение в процессе: сессия всегда терминируется, статус ERROR")
+    void runReview_exceptionDuringReview_sessionTerminatedAndRunFailed() {
         var command = buildCommand();
+        when(reviewAuditService.createReviewRun(command)).thenReturn("run-4");
         when(classContextClient.createSession(command)).thenReturn("session-4");
-        when(classContextClient.fetchStructures("session-4")).thenThrow(new RuntimeException("network error"));
+        when(classContextClient.fetchStructures("session-4"))
+                .thenThrow(new RuntimeException("network error"));
 
         orchestrator.runReview(command);
 
         verify(classContextClient).deleteSession("session-4");
+        verify(reviewAuditService).failReviewRun(eq("run-4"), contains("network error"));
         verify(gitLabNotesPublisher).postNote(eq(1L), eq(10L), contains("ошибка"));
     }
 
     @Test
+    @DisplayName("Повторный webhook: предыдущая сессия терминируется перед созданием новой")
     void runReview_previousSession_isTerminatedFirst() {
         var command = buildCommand();
 
-        // Симулируем первый вызов
-        when(classContextClient.createSession(command)).thenReturn("session-A");
-        when(classContextClient.fetchStructures("session-A")).thenReturn(List.of());
-        orchestrator.runReview(command);
+        when(reviewAuditService.createReviewRun(command))
+                .thenReturn("run-A", "run-B");
+        when(classContextClient.createSession(command))
+                .thenReturn("session-A", "session-B");
+        when(classContextClient.fetchStructures(any()))
+                .thenReturn(List.of());
 
-        // Второй вызов — старая сессия должна быть удалена
-        when(classContextClient.createSession(command)).thenReturn("session-B");
-        when(classContextClient.fetchStructures("session-B")).thenReturn(List.of());
-        orchestrator.runReview(command);
+        orchestrator.runReview(command); // создаёт session-A
+        // session-A удалена в finally, поэтому activeSessionByMrKey очищена
+        orchestrator.runReview(command); // создаёт session-B
 
-        // session-A: удалена в finally первого вызова (activeSessionByMrKey очищается),
-        // поэтому второй вызов НЕ делает pre-delete старой сессии
+        // Обе сессии должны быть удалены в finally
         verify(classContextClient, atLeastOnce()).deleteSession(any());
     }
 }

@@ -1,9 +1,12 @@
 package ru.cbr.bugbusters.gitwebhookhandler.webhook.domain;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+/**
+ * Информация о проекте GitLab из webhook payload.
+ */
 public record ProjectInfo(
         Long id,
-        String name,
-        String description,
-        String homepage
+        @JsonProperty("name") String name
 ) {
 }

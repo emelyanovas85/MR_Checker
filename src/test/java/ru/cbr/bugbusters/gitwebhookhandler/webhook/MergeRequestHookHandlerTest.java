@@ -1,68 +1,88 @@
 package ru.cbr.bugbusters.gitwebhookhandler.webhook;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import ru.cbr.bugbusters.gitwebhookhandler.persistence.service.ReviewAuditService;
 import ru.cbr.bugbusters.gitwebhookhandler.review.service.MrReviewOrchestrator;
-import ru.cbr.bugbusters.gitwebhookhandler.webhook.domain.MergeRequestHookPayload;
+import ru.cbr.bugbusters.gitwebhookhandler.webhook.domain.*;
 import ru.cbr.bugbusters.gitwebhookhandler.webhook.service.MergeRequestHookHandler;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit-тесты хендлера Merge Request Hook.
+ * Проверяют маршрутизацию по action и интеграцию с аудитом.
+ */
 @ExtendWith(MockitoExtension.class)
+@DisplayName("MergeRequestHookHandler — unit тесты")
 class MergeRequestHookHandlerTest {
 
-    @Mock
-    MrReviewOrchestrator orchestrator;
+    @Mock MrReviewOrchestrator orchestrator;
+    @Mock ReviewAuditService   reviewAuditService;
+    @Mock ObjectMapper         objectMapper;
 
     @InjectMocks
     MergeRequestHookHandler handler;
 
-    private MergeRequestHookPayload buildPayload(String action) {
-        var attrs = new MergeRequestHookPayload.ObjectAttributes();
-        attrs.setAction(action);
-        attrs.setIid(5L);
-        attrs.setSourceBranch("feature");
-        attrs.setTargetBranch("main");
-        attrs.setTitle("Test MR");
-        attrs.setLastCommit(new MergeRequestHookPayload.LastCommit("sha123"));
+    @Test
+    @DisplayName("open/reopen/approved — запускают ревью и сохраняются как ACCEPTED")
+    void reviewableActions_triggerReviewAndSavedAsAccepted() {
+        for (String action : new String[]{"open", "reopen", "approved"}) {
+            MergeRequestHookPayload payload = buildPayload(action, 1L, 10L);
 
-        var payload = new MergeRequestHookPayload();
-        payload.setObjectAttributes(attrs);
-        payload.setProjectId(99L);
-        payload.setUser(new MergeRequestHookPayload.User("alice"));
-        return payload;
-    }
+            handler.handle(payload, "{}");
 
-    @ParameterizedTest
-    @ValueSource(strings = {"open", "reopen", "approved"})
-    void handle_triggeringActions_startReview(String action) {
-        handler.handle(buildPayload(action));
-        verify(orchestrator).runReview(any());
-    }
+            verify(orchestrator, atLeastOnce()).runReview(any());
+            verify(reviewAuditService, atLeastOnce())
+                    .saveWebhookEvent(any(), eq("{}"), eq(true));
 
-    @ParameterizedTest
-    @ValueSource(strings = {"close", "merge", "update", "unapproved"})
-    void handle_nonTriggeringActions_doNotStartReview(String action) {
-        handler.handle(buildPayload(action));
-        verifyNoInteractions(orchestrator);
+            reset(orchestrator, reviewAuditService);
+        }
     }
 
     @Test
-    void handle_nullPayload_doesNotThrow() {
-        // payload с null objectAttributes — сервис должен тихо проигнорировать
-        var payload = new MergeRequestHookPayload();
-        // Not throwing is the expected behavior
-        try {
-            handler.handle(payload);
-        } catch (NullPointerException e) {
-            // допустимо если нет защитной проверки — фиксируем что не падает приложение
+    @DisplayName("close/merge/update/unapproved — игнорируются, IGNORED в аудит")
+    void nonReviewableActions_ignoredAndSavedAsIgnored() {
+        for (String action : new String[]{"close", "merge", "update", "unapproved"}) {
+            MergeRequestHookPayload payload = buildPayload(action, 1L, 10L);
+
+            handler.handle(payload, "{}");
+
+            verify(orchestrator, never()).runReview(any());
+            verify(reviewAuditService, atLeastOnce())
+                    .saveWebhookEvent(any(), eq("{}"), eq(false));
+
+            reset(orchestrator, reviewAuditService);
         }
-        verifyNoInteractions(orchestrator);
+    }
+
+    @Test
+    @DisplayName("null payload objectAttributes — игнорируется, IGNORED в аудит")
+    void nullObjectAttributes_ignoredAndSavedAsIgnored() {
+        MergeRequestHookPayload payload =
+                new MergeRequestHookPayload("merge_request", null, null, null);
+
+        handler.handle(payload, "{}");
+
+        verify(orchestrator, never()).runReview(any());
+        verify(reviewAuditService).saveWebhookEvent(any(), eq("{}"), eq(false));
+    }
+
+    // ───────────────────────── helpers ─────────────────────────
+
+    private MergeRequestHookPayload buildPayload(String action, Long projectId, Long mrIid) {
+        LastCommitInfo commit = new LastCommitInfo("abc123");
+        MergeRequestAttributes attrs = new MergeRequestAttributes(
+                1L, mrIid, "Test MR", "opened", action,
+                "feat", "main", commit, "http://gitlab/mr/" + mrIid);
+        UserInfo user     = new UserInfo("testuser");
+        ProjectInfo project = new ProjectInfo(projectId, "test-project");
+        return new MergeRequestHookPayload("merge_request", user, project, attrs);
     }
 }

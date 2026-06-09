@@ -8,7 +8,11 @@ import ru.cbr.bugbusters.gitwebhookhandler.webhook.domain.MergeRequestHookPayloa
 
 /**
  * Диспетчер GitLab webhook-ов.
- * Получает события от webhook-distributor-client и маршрутизирует к нужному хендлеру.
+ *
+ * <p>Получает события от webhook-distributor-client и маршрутизирует
+ * к нужному хендлеру. Передаёт rawJson в хендлер для сохранения в аудит.
+ *
+ * @see MergeRequestHookHandler
  */
 @Slf4j
 @Service
@@ -18,11 +22,18 @@ public class GitLabWebhookDispatcher {
     private final ObjectMapper objectMapper;
     private final MergeRequestHookHandler mergeRequestHookHandler;
 
+    /**
+     * Диспетчеризует входящее событие к нужному хендлеру.
+     *
+     * @param eventType  тип события GitLab ("Merge Request Hook", ...)
+     * @param rawPayload сырой JSON payload от GitLab
+     */
     public void dispatch(String eventType, String rawPayload) {
         try {
             if ("Merge Request Hook".equalsIgnoreCase(eventType)) {
-                MergeRequestHookPayload payload = objectMapper.readValue(rawPayload, MergeRequestHookPayload.class);
-                mergeRequestHookHandler.handle(payload);
+                MergeRequestHookPayload payload =
+                        objectMapper.readValue(rawPayload, MergeRequestHookPayload.class);
+                mergeRequestHookHandler.handle(payload, rawPayload);
                 return;
             }
             log.debug("Игнорируется неподдерживаемое событие GitLab: {}", eventType);
