@@ -74,10 +74,10 @@ class MergeRequestHookHandlerTest {
         verify(reviewAuditService).saveWebhookEvent(any(), eq("{}"), eq(false));
     }
 
-    // ───────────────────────── helpers ─────────────────────────
+    // ─────────────────────── helpers ───────────────────────
 
     private MergeRequestHookPayload buildPayload(String action, Long projectId, Long mrIid) {
-        LastCommitInfo commit = new LastCommitInfo("abc123");
+        LastCommitInfo commit = new LastCommitInfo("abc123", null, null, null);
         MergeRequestAttributes attrs = new MergeRequestAttributes(
                 1L, mrIid, "Test MR", "opened", action,
                 "feat", "main", commit, "http://gitlab/mr/" + mrIid);
