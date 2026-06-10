@@ -176,10 +176,10 @@ class ReviewAuditServiceTest {
     // ─────────────────────────────────────────────────────────
 
     private MergeRequestHookPayload buildPayload(String action) {
-        LastCommitInfo commit = new LastCommitInfo("abc123");
+        LastCommitInfo commit = new LastCommitInfo("abc123", null, null, null);
         MergeRequestAttributes attrs = new MergeRequestAttributes(
                 1L, 10L, "Test MR", "opened", action, "feat", "main", commit, "http://gitlab/mr/10");
-        UserInfo user = new UserInfo("testuser");
+        UserInfo user = new UserInfo(null, "testuser");
         ProjectInfo project = new ProjectInfo(42L, "test-project");
         return new MergeRequestHookPayload("merge_request", user, project, attrs);
     }
