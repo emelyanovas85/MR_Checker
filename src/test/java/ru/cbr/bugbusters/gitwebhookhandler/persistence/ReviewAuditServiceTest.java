@@ -138,7 +138,6 @@ class ReviewAuditServiceTest {
     void failReviewRun_notFound_noException() {
         when(reviewRunRepository.findById("missing")).thenReturn(Optional.empty());
 
-        // не должно бросить исключение
         service.failReviewRun("missing", "error");
 
         verify(reviewRunRepository, never()).save(any());
@@ -179,7 +178,7 @@ class ReviewAuditServiceTest {
         LastCommitInfo commit = new LastCommitInfo("abc123", null, null, null);
         MergeRequestAttributes attrs = new MergeRequestAttributes(
                 1L, 10L, "Test MR", "opened", action, "feat", "main", commit, "http://gitlab/mr/10");
-        UserInfo user = new UserInfo(null, "testuser");
+        UserInfo user = new UserInfo("testuser");
         ProjectInfo project = new ProjectInfo(42L, "test-project");
         return new MergeRequestHookPayload("merge_request", user, project, attrs);
     }
