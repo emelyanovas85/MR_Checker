@@ -15,10 +15,6 @@ import ru.cbr.bugbusters.gitwebhookhandler.webhook.service.MergeRequestHookHandl
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-/**
- * Unit-тесты хендлера Merge Request Hook.
- * Проверяют маршрутизацию по action и интеграцию с аудитом.
- */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("MergeRequestHookHandler — unit тесты")
 class MergeRequestHookHandlerTest {
@@ -35,13 +31,9 @@ class MergeRequestHookHandlerTest {
     void reviewableActions_triggerReviewAndSavedAsAccepted() {
         for (String action : new String[]{"open", "reopen", "approved"}) {
             MergeRequestHookPayload payload = buildPayload(action, 1L, 10L);
-
             handler.handle(payload, "{}");
-
             verify(orchestrator, atLeastOnce()).runReview(any());
-            verify(reviewAuditService, atLeastOnce())
-                    .saveWebhookEvent(any(), eq("{}"), eq(true));
-
+            verify(reviewAuditService, atLeastOnce()).saveWebhookEvent(any(), eq("{}"), eq(true));
             reset(orchestrator, reviewAuditService);
         }
     }
@@ -51,13 +43,9 @@ class MergeRequestHookHandlerTest {
     void nonReviewableActions_ignoredAndSavedAsIgnored() {
         for (String action : new String[]{"close", "merge", "update", "unapproved"}) {
             MergeRequestHookPayload payload = buildPayload(action, 1L, 10L);
-
             handler.handle(payload, "{}");
-
             verify(orchestrator, never()).runReview(any());
-            verify(reviewAuditService, atLeastOnce())
-                    .saveWebhookEvent(any(), eq("{}"), eq(false));
-
+            verify(reviewAuditService, atLeastOnce()).saveWebhookEvent(any(), eq("{}"), eq(false));
             reset(orchestrator, reviewAuditService);
         }
     }
@@ -67,21 +55,19 @@ class MergeRequestHookHandlerTest {
     void nullObjectAttributes_ignoredAndSavedAsIgnored() {
         MergeRequestHookPayload payload =
                 new MergeRequestHookPayload("merge_request", null, null, null);
-
         handler.handle(payload, "{}");
-
         verify(orchestrator, never()).runReview(any());
         verify(reviewAuditService).saveWebhookEvent(any(), eq("{}"), eq(false));
     }
 
-    // ─────────────────────── helpers ───────────────────────
+    // helpers
 
     private MergeRequestHookPayload buildPayload(String action, Long projectId, Long mrIid) {
-        LastCommitInfo commit = new LastCommitInfo("abc123", null, null, null);
+        LastCommitInfo commit = new LastCommitInfo("abc123");
         MergeRequestAttributes attrs = new MergeRequestAttributes(
                 1L, mrIid, "Test MR", "opened", action,
                 "feat", "main", commit, "http://gitlab/mr/" + mrIid);
-        UserInfo user     = new UserInfo("testuser");
+        UserInfo user = new UserInfo("testuser");
         ProjectInfo project = new ProjectInfo(projectId, "test-project");
         return new MergeRequestHookPayload("merge_request", user, project, attrs);
     }

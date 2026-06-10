@@ -7,9 +7,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record LastCommitInfo(
-        String id,
-        String message,
-        String title,
-        String url
+        String id
 ) {
 }
