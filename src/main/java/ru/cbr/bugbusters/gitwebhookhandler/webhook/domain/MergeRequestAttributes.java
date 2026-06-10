@@ -1,10 +1,12 @@
 package ru.cbr.bugbusters.gitwebhookhandler.webhook.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * Атрибуты MR из object_attributes в Merge Request Hook.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record MergeRequestAttributes(
         Long id,
         Long iid,
