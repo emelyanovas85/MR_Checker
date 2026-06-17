@@ -28,7 +28,7 @@
 #
 # Примечание: удалённый хост не имеет доступа в интернет.
 # Docker-образ mcp/gitlab:latest поддерживает только stdio-транспорт.
-# Для работы со Spring AI (HTTP/SSE) используется supergateway —
+# Для работы с Open WebUI (Streamable HTTP MCP) используется supergateway —
 # в качестве base image используется официальный образ с Docker Hub:
 # supercorp/supergateway:3.2.0 (ghcr.io заблокирован корпоративным прокси)
 # Поверх него добавляются файлы GitLab MCP Server.
@@ -36,13 +36,17 @@
 # (docker save | ssh docker load) без промежуточного файла.
 # Это позволяет работать без доступа в интернет на удалённом хосте.
 #
-# Supergateway поднимает SSE-транспорт со следующими endpoint-ами:
+# Supergateway поднимает Streamable HTTP транспорт (требуется Open WebUI v0.9.6+):
 # GET  /health  — health check (возвращает "ok")
-# GET  /sse     — открытие SSE-сессии, возвращает sessionId
-# POST /message?sessionId=<id> — отправка JSON-RPC сообщений
+# POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC)
 #
-# Для Spring AI MCP client используйте:
-# spring.ai.mcp.client.sse.connections.gitlab.url: http://<host>:<port>/sse
+# ВАЖНО: Open WebUI v0.9.6 использует MCPClient на базе streamablehttp_client
+# (протокол MCP Streamable HTTP, RFC 2024-11-05).
+# Классический SSE-транспорт (/sse + POST /message) НЕ поддерживается.
+#
+# Для Open WebUI укажите в настройках Tool Servers:
+# URL: http://<host>:<port>
+# Type: mcp
 # =============================================================================
 
 set -euo pipefail
@@ -203,12 +207,13 @@ COPY --from=${IMAGE_NAME} /app /app
 WORKDIR /app
 
 # supergateway запускается как ENTRYPOINT официального образа.
-# Передаём параметры: stdio-команда, порт, SSE/message пути, health endpoint.
+# --outputTransport streamableHttp — обязательно для Open WebUI v0.9.6+:
+# MCPClient внутри Open WebUI использует streamablehttp_client (не SSE).
+# Endpoint: POST /mcp  (Streamable HTTP MCP, RFC 2024-11-05)
 CMD ["--stdio", "node dist/index.js", \
      "--port", "${MCP_PORT}", \
-     "--outputTransport", "sse", \
-     "--ssePath", "/sse", \
-     "--messagePath", "/message", \
+     "--outputTransport", "streamableHttp", \
+     "--streamableHttpPath", "/mcp", \
      "--healthEndpoint", "/health"]
 DOCKERFILE
 
@@ -309,7 +314,7 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MCP сервера (официальный supergateway:3.2.0 встроен в образ)..."
+log "Запуск GitLab MCP сервера (supergateway:3.2.0, Streamable HTTP транспорт)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
@@ -338,54 +343,35 @@ if [[ "\${READY}" != "true" ]]; then
 fi
 
 # ── Проверка 1: GET /health ──────────────────────────────────────────────────
-log "Проверка 1/3: GET /health..."
+log "Проверка 1/2: GET /health..."
 HEALTH_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 \
   http://localhost:\${MCP_PORT}/health --max-time 5 2>/dev/null || echo "CURL_FAILED")
 if [[ "\${HEALTH_RESPONSE}" == "ok" ]]; then
   ok "Health endpoint отвечает корректно (→ ok)"
 else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
-  warn "Это нормально если supergateway старше v2.x — переходим к проверке /sse"
 fi
 
-# ── Проверка 2: GET /sse — получение sessionId ──────────────────────────────
-log "Проверка 2/3: GET /sse (получение sessionId)..."
-SSE_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 \
-  http://localhost:\${MCP_PORT}/sse --max-time 5 2>/dev/null || echo "CURL_FAILED")
+# ── Проверка 2: POST /mcp — Streamable HTTP MCP initialize ──────────────────
+# Open WebUI v0.9.6 использует streamablehttp_client: POST /mcp
+# Ответ приходит как SSE-поток с data: {...} или application/json
+log "Проверка 2/2: POST /mcp (Streamable HTTP MCP initialize)..."
+INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST \
+  "http://localhost:\${MCP_PORT}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
+  --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
-if [[ "\${SSE_RESPONSE}" == "CURL_FAILED" ]]; then
-  warn "GET /sse не ответил — проверьте логи: docker logs gitlab-mcp --tail=50"
+if [[ "\${INIT_RESPONSE}" == "CURL_FAILED" ]]; then
+  warn "POST /mcp не ответил — проверьте логи: docker logs gitlab-mcp --tail=50"
+elif echo "\${INIT_RESPONSE}" | grep -qiE 'serverInfo|protocolVersion|2024-11-05'; then
+  ok "Streamable HTTP MCP endpoint отвечает корректно (initialize принят)"
+elif echo "\${INIT_RESPONSE}" | grep -qiE '<html|Cannot POST|503|404'; then
+  warn "POST /mcp вернул ошибку: \${INIT_RESPONSE}"
+  warn "Проверьте что --outputTransport streamableHttp и --streamableHttpPath /mcp заданы верно"
 else
-  ok "SSE endpoint отвечает"
-fi
-
-SESSION_ID=\$(printf '%s' "\${SSE_RESPONSE}" \
-  | sed -n 's#.*sessionId=\([^[:space:]]\+\).*#\1#p' | head -n1)
-
-if [[ -n "\${SESSION_ID}" ]]; then
-  ok "sessionId получен: \${SESSION_ID}"
-else
-  warn "sessionId не найден в ответе /sse. Ответ: \${SSE_RESPONSE}"
-fi
-
-# ── Проверка 3: POST /message?sessionId=... — initialize ────────────────────
-if [[ -n "\${SESSION_ID}" ]]; then
-  log "Проверка 3/3: POST /message?sessionId=\${SESSION_ID} (initialize)..."
-  INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST \
-    "http://localhost:\${MCP_PORT}/message?sessionId=\${SESSION_ID}" \
-    -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
-    --max-time 5 2>/dev/null || echo "CURL_FAILED")
-
-  if [[ "\${INIT_RESPONSE}" == "CURL_FAILED" ]]; then
-    warn "POST /message не ответил"
-  elif echo "\${INIT_RESPONSE}" | grep -qiE '<html|Cannot POST|503'; then
-    warn "POST /message вернул ошибку: \${INIT_RESPONSE}"
-  else
-    ok "POST /message принят сервером (ответ в SSE-потоке)"
-  fi
-else
-  warn "Проверка 3/3 пропущена — sessionId не был получен"
+  ok "POST /mcp принят сервером. Ответ: \${INIT_RESPONSE:0:200}"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
@@ -393,11 +379,12 @@ echo ""
 eval "\${DOCKER_COMPOSE} ps"
 echo ""
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${GREEN} SSE URL    : http://\${SERVER_IP}:\${MCP_PORT}/sse\${NC}"
+echo -e "\${GREEN} MCP URL    : http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
 echo -e "\${GREEN} Health URL : http://\${SERVER_IP}:\${MCP_PORT}/health\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${YELLOW} Spring AI config:\${NC}"
-echo -e "  spring.ai.mcp.client.sse.connections.gitlab.url: http://\${SERVER_IP}:\${MCP_PORT}/sse\${NC}"
+echo -e "\${YELLOW} Open WebUI → Admin → Tool Servers → Add:\${NC}"
+echo -e "  URL:  http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
+echo -e "  Type: mcp\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 REMOTE_DEPLOY
 
