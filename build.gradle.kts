@@ -56,7 +56,8 @@ dependencies {
     // Используется для gitlab-mcp (supergateway, порт 8083) и java-class-context mcp-wrapper.
     // Spring AI 2.0 автоматически вызывает tools/list при старте и регистрирует
     // все MCP-инструменты как Spring AI Tools через service-connection механизм.
-    implementation("org.springframework.ai:spring-ai-starter-mcp-client-webmvc")
+    // Артефакт: spring-ai-starter-mcp-client (без -webmvc суффикса — Spring AI 2.0.0 release)
+    implementation("org.springframework.ai:spring-ai-starter-mcp-client")
 
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
     implementation("com.fasterxml.jackson.core:jackson-databind")
