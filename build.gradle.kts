@@ -70,9 +70,10 @@ dependencies {
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
-    // spring-boot-starter-test включает spring-boot-test-autoconfigure,
-    // который содержит @WebMvcTest и @DataJpaTest в Spring Boot 4.x
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Spring Boot 4.x: @WebMvcTest и @DataJpaTest вынесены в отдельные артефакты
+    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
+    testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
