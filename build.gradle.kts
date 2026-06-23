@@ -51,6 +51,13 @@ dependencies {
     implementation("com.h2database:h2")
 
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
+
+    // MCP-клиент: подключение к внешним MCP-серверам по Streamable HTTP транспорту.
+    // Используется для gitlab-mcp (supergateway, порт 8083) и java-class-context mcp-wrapper.
+    // Spring AI 2.0 автоматически вызывает tools/list при старте и регистрирует
+    // все MCP-инструменты как Spring AI Tools через service-connection механизм.
+    implementation("org.springframework.ai:spring-ai-starter-mcp-client-webmvc")
+
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
     implementation("com.fasterxml.jackson.core:jackson-databind")
 
