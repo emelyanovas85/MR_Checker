@@ -19,6 +19,7 @@ configurations {
 }
 
 repositories {
+    mavenCentral()
     maven {
         name = "office_dev"
         url = uri("http://10.1.5.6:8882/artifactory/gradle-dev")
@@ -29,7 +30,6 @@ repositories {
         url = uri("http://10.1.5.6:8882/artifactory/gradle-release-local/")
         isAllowInsecureProtocol = true
     }
-    mavenCentral()
 }
 
 extra["springAiVersion"] = "2.0.0"
