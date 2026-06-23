@@ -53,10 +53,6 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
 
     // MCP-клиент: подключение к внешним MCP-серверам по Streamable HTTP транспорту.
-    // Используется для gitlab-mcp (supergateway, порт 8083) и java-class-context mcp-wrapper.
-    // Spring AI 2.0 автоматически вызывает tools/list при старте и регистрирует
-    // все MCP-инструменты как Spring AI Tools через service-connection механизм.
-    // Артефакт: spring-ai-starter-mcp-client (без -webmvc суффикса — Spring AI 2.0.0 release)
     implementation("org.springframework.ai:spring-ai-starter-mcp-client")
 
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
@@ -76,9 +72,9 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-test-autoconfigure")
-    // Spring Boot 4.x: тест-стартеры для слайс-тестов вынесены в отдельные артефакты
-    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
+    // Spring Boot 4.x: аннотации @WebMvcTest / @DataJpaTest вынесены в отдельные модули
+    testImplementation("org.springframework.boot:spring-boot-webmvc-test")
+    testImplementation("org.springframework.boot:spring-boot-data-jpa-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
