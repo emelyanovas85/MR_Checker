@@ -5,7 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -38,7 +38,7 @@ class MrReviewControllerTest {
     @MockitoBean MrReviewOrchestrator orchestrator;
     @MockitoBean ReviewRunRepository   reviewRunRepository;
 
-    // ─── POST /api/review/trigger ───────────────────────────────
+    // ─── POST /api/review/trigger ────────────────────────────────────────
 
     @Test
     @DisplayName("POST /trigger — валидный запрос возвращает 202 и передаёт команду оркестратору")
@@ -99,7 +99,7 @@ class MrReviewControllerTest {
         verifyNoInteractions(orchestrator);
     }
 
-    // ─── GET /api/review/runs ───────────────────────────────────
+    // ─── GET /api/review/runs ────────────────────────────────────────────
 
     @Test
     @DisplayName("GET /runs — без фильтров возвращает last 50")
@@ -138,7 +138,7 @@ class MrReviewControllerTest {
                 .andExpect(jsonPath("$[0].status").value("ERROR"));
     }
 
-    // ─── GET /api/review/runs/{runId} ───────────────────────────
+    // ─── GET /api/review/runs/{runId} ──────────────────────────────────────
 
     @Test
     @DisplayName("GET /runs/{runId} — существующий runId возвращает 200 с деталями")
@@ -162,7 +162,7 @@ class MrReviewControllerTest {
                 .andExpect(status().isNotFound());
     }
 
-    // ─── helpers ────────────────────────────────────────────────
+    // ─── helpers ─────────────────────────────────────────────────────
 
     private ReviewRunEntity buildRunEntity(String id, Long projectId, Long mrIid,
                                            ReviewRunEntity.ReviewStatus status) {
