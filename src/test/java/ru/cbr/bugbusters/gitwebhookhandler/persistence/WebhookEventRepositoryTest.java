@@ -3,7 +3,7 @@ package ru.cbr.bugbusters.gitwebhookhandler.persistence;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.test.context.ActiveProfiles;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.entity.WebhookEventEntity;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.repository.WebhookEventRepository;
@@ -84,7 +84,7 @@ class WebhookEventRepositoryTest {
         assertThat(loaded.getRawPayload()).isEqualTo(json);
     }
 
-    // ───────────────────────── helpers ─────────────────────────
+    // ─────────────────────── helpers ─────────────────────────
 
     private WebhookEventEntity buildEvent(Long projectId, Long mrIid,
                                           WebhookEventEntity.ProcessingStatus status) {

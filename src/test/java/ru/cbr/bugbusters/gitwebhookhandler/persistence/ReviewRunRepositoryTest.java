@@ -3,7 +3,7 @@ package ru.cbr.bugbusters.gitwebhookhandler.persistence;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.test.context.ActiveProfiles;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.entity.ReviewRunEntity;
 import ru.cbr.bugbusters.gitwebhookhandler.persistence.repository.ReviewRunRepository;
@@ -91,7 +91,7 @@ class ReviewRunRepositoryTest {
         assertThat(loaded.getFinishedAt()).isNotNull();
     }
 
-    // ───────────────────────── helpers ─────────────────────────
+    // ─────────────────────── helpers ─────────────────────────
 
     private ReviewRunEntity buildRun(Long projectId, Long mrIid,
                                      ReviewRunEntity.ReviewStatus status, Instant startedAt) {
