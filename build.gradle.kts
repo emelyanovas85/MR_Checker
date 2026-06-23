@@ -1,7 +1,6 @@
 plugins {
     java
-    id("org.springframework.boot") version "3.5.14"
-    id("io.spring.dependency-management") version "1.1.7"
+    id("org.springframework.boot") version "4.0.6"
 }
 
 group = "ru.cbr.bugbusters"
@@ -33,15 +32,11 @@ repositories {
     mavenCentral()
 }
 
-extra["springAiVersion"] = "1.0.6"
-
-dependencyManagement {
-    imports {
-        mavenBom("org.springframework.ai:spring-ai-bom:${property("springAiVersion")}")
-    }
-}
+extra["springAiVersion"] = "2.0.0"
 
 dependencies {
+    implementation(platform("org.springframework.ai:spring-ai-bom:${property("springAiVersion")}"))
+
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
@@ -53,7 +48,9 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-openai")
     implementation("org.gitlab4j:gitlab4j-api:6.0.0")
     implementation("com.fasterxml.jackson.core:jackson-databind")
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.8")
+
+    // springdoc 3.x — требуется для Spring Boot 4.x / Spring Framework 7.x
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.0")
 
     // Guava — RateLimiter для ограничения частоты запросов к LLM (LlmRateLimiter)
     implementation("com.google.guava:guava:33.4.8-jre")
