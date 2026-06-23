@@ -72,8 +72,8 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Spring Boot 4.x: @WebMvcTest и @DataJpaTest вынесены в отдельные артефакты
-    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
+    testImplementation("org.springframework.boot:spring-boot-webmvc-test")
+    testImplementation("org.springframework.boot:spring-boot-data-jpa-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
