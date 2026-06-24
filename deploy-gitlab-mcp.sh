@@ -40,9 +40,10 @@
 # GET  /health  — health check (возвращает "ok")
 # POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC)
 #
-# ВАЖНО: Open WebUI v0.9.6 использует MCPClient на базе streamablehttp_client
-# (протокол MCP Streamable HTTP, RFC 2024-11-05).
-# Классический SSE-транспорт (/sse + POST /message) НЕ поддерживается.
+# ВАЖНО: Accept header порядок — text/event-stream ПЕРВЫМ.
+# Open WebUI (и Spring AI WebMvcStreamableServerTransportProvider) требуют:
+#   Accept: text/event-stream, application/json
+# Порядок критичен: Spring AI проверяет наличие text/event-stream первым.
 #
 # Для Open WebUI укажите в настройках Tool Servers:
 # URL: http://<host>:<port>
@@ -353,13 +354,14 @@ else
 fi
 
 # ── Проверка 2: POST /mcp — Streamable HTTP MCP initialize ──────────────────
-# Open WebUI v0.9.6 использует streamablehttp_client: POST /mcp
-# Ответ приходит как SSE-поток с data: {...} или application/json
+# ВАЖНО: Accept header — text/event-stream ПЕРВЫМ.
+# Spring AI WebMvcStreamableServerTransportProvider и supergateway требуют
+# text/event-stream на первом месте. Порядок критичен.
 log "Проверка 2/2: POST /mcp (Streamable HTTP MCP initialize)..."
 INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
+  -H 'Accept: text/event-stream, application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
