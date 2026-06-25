@@ -40,6 +40,16 @@
 # GET  /health  — health check (возвращает "ok")
 # POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC)
 #
+# ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
+# Без него supergateway запускает новый дочерний процесс на каждый POST-запрос.
+# MCP-протокол требует трёх последовательных запросов в рамках одной сессии:
+#   1. POST initialize        -> Mcp-Session-Id
+#   2. POST notifications/initialized  (с тем же Mcp-Session-Id)
+#   3. POST tools/list / tools/call    (с тем же Mcp-Session-Id)
+# В stateless режиме шаги 2 и 3 попадают в новый процесс без инициализации
+# и возвращают пустой список инструментов или ошибку.
+# --stateful сохраняет дочерний процесс живым между запросами одной сессии.
+#
 # ВАЖНО: Accept header порядок — text/event-stream ПЕРВЫМ.
 # Open WebUI (и Spring AI WebMvcStreamableServerTransportProvider) требуют:
 #   Accept: text/event-stream, application/json
@@ -208,21 +218,23 @@ COPY --from=${IMAGE_NAME} /app /app
 WORKDIR /app
 
 # supergateway запускается как ENTRYPOINT официального образа.
-# --outputTransport streamableHttp — обязательно для Open WebUI v0.9.6+:
-# MCPClient внутри Open WebUI использует streamablehttp_client (не SSE).
-# Endpoint: POST /mcp  (Streamable HTTP MCP, RFC 2024-11-05)
+# --stateful ОБЯЗАТЕЛЕН: сохраняет дочерний процесс между запросами одной сессии.
+# Без --stateful каждый POST запускает новый процесс node — MCP-сессия теряется
+# между initialize, notifications/initialized и tools/list, что даёт пустой список тулов.
+# --outputTransport streamableHttp — для Open WebUI v0.9.6+ (streamablehttp_client).
 CMD ["--stdio", "node dist/index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
      "--streamableHttpPath", "/mcp", \
-     "--healthEndpoint", "/health"]
+     "--healthEndpoint", "/health", \
+     "--stateful"]
 DOCKERFILE
 
 docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
   || error "Не удалось собрать образ ${BUILT_IMAGE_NAME}"
 
 rm -rf "${BUILD_CTX}"
-ok "Образ ${BUILT_IMAGE_NAME} собран локально на базе официального supergateway"
+ok "Образ ${BUILT_IMAGE_NAME} собран локально на базе официального supergateway (--stateful)"
 
 # ── Передача собранного образа на сервер ──────────────────────────────────────
 log "Передача образа ${BUILT_IMAGE_NAME} на ${REMOTE_HOST} (docker save | ssh docker load)..."
@@ -315,7 +327,7 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MCP сервера (supergateway:3.2.0, Streamable HTTP транспорт)..."
+log "Запуск GitLab MCP сервера (supergateway:3.2.0, Streamable HTTP, --stateful)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
@@ -344,7 +356,7 @@ if [[ "\${READY}" != "true" ]]; then
 fi
 
 # ── Проверка 1: GET /health ──────────────────────────────────────────────────
-log "Проверка 1/2: GET /health..."
+log "Проверка 1/3: GET /health..."
 HEALTH_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 \
   http://localhost:\${MCP_PORT}/health --max-time 5 2>/dev/null || echo "CURL_FAILED")
 if [[ "\${HEALTH_RESPONSE}" == "ok" ]]; then
@@ -353,27 +365,71 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: POST /mcp — Streamable HTTP MCP initialize ──────────────────
-# ВАЖНО: Accept header — text/event-stream ПЕРВЫМ.
-# Spring AI WebMvcStreamableServerTransportProvider и supergateway требуют
-# text/event-stream на первом месте. Порядок критичен.
-log "Проверка 2/2: POST /mcp (Streamable HTTP MCP initialize)..."
-INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 -X POST \
+# ── Проверка 2: Полный MCP handshake: initialize → notifications/initialized → tools/list ──
+# Это точная проверка того, что --stateful работает и тулы загружаются.
+log "Проверка 2/3: MCP handshake (initialize → notif → tools/list)..."
+
+# Step 1: initialize — получаем Mcp-Session-Id
+INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
+  -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
-if [[ "\${INIT_RESPONSE}" == "CURL_FAILED" ]]; then
-  warn "POST /mcp не ответил — проверьте логи: docker logs gitlab-mcp --tail=50"
-elif echo "\${INIT_RESPONSE}" | grep -qiE 'serverInfo|protocolVersion|2024-11-05'; then
-  ok "Streamable HTTP MCP endpoint отвечает корректно (initialize принят)"
-elif echo "\${INIT_RESPONSE}" | grep -qiE '<html|Cannot POST|503|404'; then
-  warn "POST /mcp вернул ошибку: \${INIT_RESPONSE}"
-  warn "Проверьте что --outputTransport streamableHttp и --streamableHttpPath /mcp заданы верно"
+if [[ "\${INIT_OUT}" == "CURL_FAILED" ]]; then
+  warn "initialize: curl ошибка"
 else
-  ok "POST /mcp принят сервером. Ответ: \${INIT_RESPONSE:0:200}"
+  SESSION_ID=\$(echo "\${INIT_OUT}" | grep -i '^Mcp-Session-Id:' | tr -d '\r' | awk '{print \$2}')
+  if echo "\${INIT_OUT}" | grep -qiE 'serverInfo|protocolVersion'; then
+    ok "initialize: OK (session=\${SESSION_ID:-none})"
+  else
+    warn "initialize: неожиданный ответ: \${INIT_OUT:0:200}"
+    SESSION_ID=""
+  fi
+fi
+
+# Step 2: notifications/initialized
+NOTIF_HEADERS=""
+[[ -n "\${SESSION_ID:-}" ]] && NOTIF_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+eval curl -s --noproxy localhost,127.0.0.1 -X POST \
+  "http://localhost:\${MCP_PORT}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream, application/json' \
+  \${NOTIF_HEADERS} \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  --max-time 5 >/dev/null 2>&1 || true
+ok "notifications/initialized: отправлено"
+
+# Step 3: tools/list
+LIST_HEADERS=""
+[[ -n "\${SESSION_ID:-}" ]] && LIST_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
+  "http://localhost:\${MCP_PORT}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream, application/json' \
+  \${LIST_HEADERS} \
+  -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
+  --max-time 10 2>/dev/null || echo "CURL_FAILED")
+
+if [[ "\${LIST_OUT}" == "CURL_FAILED" ]]; then
+  warn "tools/list: curl ошибка"
+elif echo "\${LIST_OUT}" | grep -q '"tools"'; then
+  TOOL_COUNT=\$(echo "\${LIST_OUT}" | grep -o '"name"' | wc -l)
+  ok "tools/list: OK — обнаружено инструментов: \${TOOL_COUNT}"
+elif echo "\${LIST_OUT}" | grep -q '"error"'; then
+  warn "tools/list вернул ошибку: \${LIST_OUT:0:300}"
+  warn "Проверьте что supergateway запущен с --stateful"
+else
+  warn "tools/list: неожиданный ответ: \${LIST_OUT:0:200}"
+fi
+
+# ── Проверка 3: --stateful в логах контейнера ──────────────────────────────
+log "Проверка 3/3: --stateful в логах..."
+if docker logs gitlab-mcp --tail=30 2>&1 | grep -q 'stateful\|Stateful'; then
+  ok "--stateful режим подтверждён в логах"
+else
+  warn "--stateful не найден в логах. Проверьте: docker logs gitlab-mcp --tail=50"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
@@ -383,10 +439,10 @@ echo ""
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 echo -e "\${GREEN} MCP URL    : http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
 echo -e "\${GREEN} Health URL : http://\${SERVER_IP}:\${MCP_PORT}/health\${NC}"
+echo -e "\${GREEN} Режим      : stateful (сессия сохраняется между запросами)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${YELLOW} Open WebUI → Admin → Tool Servers → Add:\${NC}"
-echo -e "  URL:  http://\${SERVER_IP}:\${MCP_PORT}\${NC}"
-echo -e "  Type: mcp\${NC}"
+echo -e "\${YELLOW} Следующий шаг — пересобрать Open WebUI:\${NC}"
+echo -e "  cd ~/open-webui && docker compose up -d --force-recreate open-webui-init\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 REMOTE_DEPLOY
 
