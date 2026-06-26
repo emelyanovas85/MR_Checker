@@ -45,7 +45,7 @@
 #
 # Supergateway поднимает Streamable HTTP транспорт (требуется Open WebUI v0.9.6+):
 # GET  /health  — health check (возвращает "ok")
-# POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC)
+# POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC, отвечает SSE-потоком)
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
 # =============================================================================
@@ -346,72 +346,103 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake ────────────────────────────────────────────────
+# ── Проверка 2: MCP handshake (SSE-aware) ────────────────────────────────────
+# supergateway отвечает SSE-потоком (Content-Type: text/event-stream).
+# Данные приходят в виде строк "data: {...json...}".
+# SESSION_ID возвращается в HTTP-заголовке Mcp-Session-Id.
+# Используем --max-time для ограничения времени чтения SSE-потока.
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
-INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
-  "http://localhost:\${MCP_PORT}/mcp" \
+# -- initialize: читаем заголовки + SSE тело --
+INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
+curl -s --noproxy localhost,127.0.0.1 \
+  -X POST "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
+  -D "\${INIT_RESPONSE_FILE}.headers" \
   -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
-  --max-time 10 2>/dev/null || echo "CURL_FAILED")
+  --max-time 8 -o "\${INIT_RESPONSE_FILE}.body" 2>/dev/null || true
 
-if [[ "\${INIT_OUT}" == "CURL_FAILED" ]]; then
-  warn "initialize: curl ошибка"
-else
-  SESSION_ID=\$(echo "\${INIT_OUT}" | grep -i '^Mcp-Session-Id:' | tr -d '\r' | awk '{print \$2}')
-  if echo "\${INIT_OUT}" | grep -qiE 'serverInfo|protocolVersion'; then
-    ok "initialize: OK (session=\${SESSION_ID:-none})"
-  else
-    warn "initialize: неожиданный ответ: \${INIT_OUT:0:200}"
-    SESSION_ID=""
+SESSION_ID=""
+INIT_OK=false
+
+if [[ -f "\${INIT_RESPONSE_FILE}.headers" ]]; then
+  # Извлекаем SESSION_ID из заголовков HTTP-ответа
+  SESSION_ID=\$(grep -i '^mcp-session-id:' "\${INIT_RESPONSE_FILE}.headers" \
+    | tr -d '\r' | awk '{print \$2}' | head -1)
+fi
+
+if [[ -f "\${INIT_RESPONSE_FILE}.body" ]]; then
+  # SSE-тело: ищем JSON в строках вида "data: {...}"
+  # serverInfo присутствует в ответе на initialize
+  INIT_DATA=\$(grep '^data:' "\${INIT_RESPONSE_FILE}.body" | sed 's/^data: //' | head -5)
+  if echo "\${INIT_DATA}" | grep -qiE 'serverInfo|protocolVersion'; then
+    INIT_OK=true
   fi
 fi
 
-NOTIF_HEADERS=""
-[[ -n "\${SESSION_ID:-}" ]] && NOTIF_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
-eval curl -s --noproxy localhost,127.0.0.1 -X POST \
-  "http://localhost:\${MCP_PORT}/mcp" \
+rm -f "\${INIT_RESPONSE_FILE}" "\${INIT_RESPONSE_FILE}.headers" "\${INIT_RESPONSE_FILE}.body"
+
+if [[ "\${INIT_OK}" == "true" ]]; then
+  ok "initialize: OK (session=\${SESSION_ID:-none})"
+else
+  warn "initialize: ответ сервера не содержит serverInfo (SSE-тело пустое или таймаут)"
+fi
+
+# -- notifications/initialized --
+NOTIF_EXTRA_HEADERS=""
+[[ -n "\${SESSION_ID}" ]] && NOTIF_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+eval curl -s --noproxy localhost,127.0.0.1 \
+  -X POST "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  \${NOTIF_HEADERS} \
+  \${NOTIF_EXTRA_HEADERS} \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   --max-time 5 >/dev/null 2>&1 || true
 ok "notifications/initialized: отправлено"
 
-LIST_HEADERS=""
-[[ -n "\${SESSION_ID:-}" ]] && LIST_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
-LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
-  "http://localhost:\${MCP_PORT}/mcp" \
+# -- tools/list: читаем SSE-тело через временный файл --
+LIST_EXTRA_HEADERS=""
+[[ -n "\${SESSION_ID}" ]] && LIST_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+
+LIST_RESPONSE_FILE=\$(mktemp /tmp/mcp-list-XXXXXX)
+eval curl -s --noproxy localhost,127.0.0.1 \
+  -X POST "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  \${LIST_HEADERS} \
+  \${LIST_EXTRA_HEADERS} \
   -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
-  --max-time 10 2>/dev/null || echo "CURL_FAILED")
+  --max-time 10 -o "\${LIST_RESPONSE_FILE}" 2>/dev/null || true
 
-if [[ "\${LIST_OUT}" == "CURL_FAILED" ]]; then
-  warn "tools/list: curl ошибка"
-elif echo "\${LIST_OUT}" | grep -q '"tools"'; then
-  TOOL_COUNT=\$(echo "\${LIST_OUT}" | grep -o '"name"' | wc -l)
+# Извлекаем данные из SSE-потока (строки вида "data: {...}")
+LIST_DATA=\$(grep '^data:' "\${LIST_RESPONSE_FILE}" | sed 's/^data: //' | head -5)
+rm -f "\${LIST_RESPONSE_FILE}"
+
+if [[ -z "\${LIST_DATA}" ]]; then
+  warn "tools/list: пустой ответ (нет SSE data-строк). Session ID: '\${SESSION_ID:-не получен}'"
+elif echo "\${LIST_DATA}" | grep -q '"tools"'; then
+  TOOL_COUNT=\$(echo "\${LIST_DATA}" | grep -o '"name"' | wc -l)
   ok "tools/list: OK — инструментов обнаружено: \${TOOL_COUNT}"
-  # Проверяем наличие инструмента для комментариев
-  if echo "\${LIST_OUT}" | grep -q 'add_merge_request_comment'; then
+  if echo "\${LIST_DATA}" | grep -q 'add_merge_request_comment'; then
     ok "Инструмент add_merge_request_comment: ДОСТУПЕН ✓"
   else
-    warn "Инструмент add_merge_request_comment не найден в списке"
+    warn "Инструмент add_merge_request_comment не найден в списке инструментов"
   fi
-elif echo "\${LIST_OUT}" | grep -q '"error"'; then
-  warn "tools/list вернул ошибку: \${LIST_OUT:0:300}"
+elif echo "\${LIST_DATA}" | grep -q '"error"'; then
+  ERR_MSG=\$(echo "\${LIST_DATA}" | grep -o '"message":"[^"]*"' | head -1)
+  warn "tools/list вернул ошибку: \${ERR_MSG:-см. полный ответ выше}"
 else
-  warn "tools/list: неожиданный ответ: \${LIST_OUT:0:200}"
+  warn "tools/list: неожиданный ответ: \${LIST_DATA:0:200}"
 fi
 
-# ── Проверка 3: --stateful в логах ───────────────────────────────────────────
-log "Проверка 3/3: --stateful в логах..."
-if docker logs gitlab-mcp --tail=30 2>&1 | grep -q 'stateful\|Stateful'; then
-  ok "--stateful режим подтверждён в логах"
+# ── Проверка 3: CMD в инспекции контейнера ────────────────────────────────────
+# supergateway не пишет "stateful" в лог явно, проверяем через docker inspect
+log "Проверка 3/3: флаг --stateful в конфигурации контейнера..."
+CONTAINER_CMD=\$(docker inspect gitlab-mcp --format '{{json .Config.Cmd}}' 2>/dev/null || echo "")
+if echo "\${CONTAINER_CMD}" | grep -q 'stateful'; then
+  ok "--stateful: присутствует в CMD контейнера ✓"
 else
-  warn "--stateful не найден в логах. Проверьте: docker logs gitlab-mcp --tail=50"
+  warn "--stateful не найден в CMD. Конфигурация: \${CONTAINER_CMD}"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
