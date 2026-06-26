@@ -347,13 +347,11 @@ else
 fi
 
 # ── Проверка 2: MCP handshake (SSE-aware) ────────────────────────────────────
-# supergateway отвечает SSE-потоком (Content-Type: text/event-stream).
-# Данные приходят в виде строк "data: {...json...}".
-# SESSION_ID возвращается в HTTP-заголовке Mcp-Session-Id.
-# Используем --max-time для ограничения времени чтения SSE-потока.
+# grep в подстановке $() возвращает exit 1 если ничего не нашёл.
+# При set -euo pipefail это роняет весь скрипт — защищаем через || true.
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
-# -- initialize: читаем заголовки + SSE тело --
+# -- initialize --
 INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
 curl -s --noproxy localhost,127.0.0.1 \
   -X POST "http://localhost:\${MCP_PORT}/mcp" \
@@ -367,15 +365,14 @@ SESSION_ID=""
 INIT_OK=false
 
 if [[ -f "\${INIT_RESPONSE_FILE}.headers" ]]; then
-  # Извлекаем SESSION_ID из заголовков HTTP-ответа
+  # || true: grep вернёт exit 1 если заголовка нет — не роняем скрипт
   SESSION_ID=\$(grep -i '^mcp-session-id:' "\${INIT_RESPONSE_FILE}.headers" \
-    | tr -d '\r' | awk '{print \$2}' | head -1)
+    | tr -d '\r' | awk '{print \$2}' | head -1 || true)
 fi
 
 if [[ -f "\${INIT_RESPONSE_FILE}.body" ]]; then
-  # SSE-тело: ищем JSON в строках вида "data: {...}"
-  # serverInfo присутствует в ответе на initialize
-  INIT_DATA=\$(grep '^data:' "\${INIT_RESPONSE_FILE}.body" | sed 's/^data: //' | head -5)
+  # || true: grep вернёт exit 1 если data-строк нет — не роняем скрипт
+  INIT_DATA=\$(grep '^data:' "\${INIT_RESPONSE_FILE}.body" | sed 's/^data: //' | head -5 || true)
   if echo "\${INIT_DATA}" | grep -qiE 'serverInfo|protocolVersion'; then
     INIT_OK=true
   fi
@@ -401,7 +398,7 @@ eval curl -s --noproxy localhost,127.0.0.1 \
   --max-time 5 >/dev/null 2>&1 || true
 ok "notifications/initialized: отправлено"
 
-# -- tools/list: читаем SSE-тело через временный файл --
+# -- tools/list --
 LIST_EXTRA_HEADERS=""
 [[ -n "\${SESSION_ID}" ]] && LIST_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
 
@@ -414,8 +411,8 @@ eval curl -s --noproxy localhost,127.0.0.1 \
   -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
   --max-time 10 -o "\${LIST_RESPONSE_FILE}" 2>/dev/null || true
 
-# Извлекаем данные из SSE-потока (строки вида "data: {...}")
-LIST_DATA=\$(grep '^data:' "\${LIST_RESPONSE_FILE}" | sed 's/^data: //' | head -5)
+# || true: grep вернёт exit 1 если data-строк нет — не роняем скрипт
+LIST_DATA=\$(grep '^data:' "\${LIST_RESPONSE_FILE}" | sed 's/^data: //' | head -5 || true)
 rm -f "\${LIST_RESPONSE_FILE}"
 
 if [[ -z "\${LIST_DATA}" ]]; then
@@ -429,14 +426,13 @@ elif echo "\${LIST_DATA}" | grep -q '"tools"'; then
     warn "Инструмент add_merge_request_comment не найден в списке инструментов"
   fi
 elif echo "\${LIST_DATA}" | grep -q '"error"'; then
-  ERR_MSG=\$(echo "\${LIST_DATA}" | grep -o '"message":"[^"]*"' | head -1)
+  ERR_MSG=\$(echo "\${LIST_DATA}" | grep -o '"message":"[^"]*"' | head -1 || true)
   warn "tools/list вернул ошибку: \${ERR_MSG:-см. полный ответ выше}"
 else
   warn "tools/list: неожиданный ответ: \${LIST_DATA:0:200}"
 fi
 
 # ── Проверка 3: CMD в инспекции контейнера ────────────────────────────────────
-# supergateway не пишет "stateful" в лог явно, проверяем через docker inspect
 log "Проверка 3/3: флаг --stateful в конфигурации контейнера..."
 CONTAINER_CMD=\$(docker inspect gitlab-mcp --format '{{json .Config.Cmd}}' 2>/dev/null || echo "")
 if echo "\${CONTAINER_CMD}" | grep -q 'stateful'; then
@@ -472,7 +468,6 @@ if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
 else
   log "Обновление MCP-серверов в Open WebUI..."
 
-  # Определяем версию compose
   if docker compose version >/dev/null 2>&1; then
     OW_COMPOSE="docker compose"
   else
@@ -481,15 +476,12 @@ else
 
   cd "\${OPENWEBUI_DIR}"
 
-  # Останавливаем предыдущий init-контейнер если вдруг завис
   \${OW_COMPOSE} stop open-webui-init 2>/dev/null || true
   \${OW_COMPOSE} rm -f open-webui-init 2>/dev/null || true
 
-  # Запускаем open-webui-init
   \${OW_COMPOSE} up -d --force-recreate open-webui-init
   ok "open-webui-init запущен — регистрирует MCP-серверы..."
 
-  # Ждём завершения (exit 0 = успех, timeout 60 сек)
   MAX_INIT_WAIT=60
   INIT_ELAPSED=0
   INIT_RESULT="timeout"
@@ -512,10 +504,10 @@ else
     ok "Open WebUI обновлён — MCP-серверы зарегистрированы ✓"
   elif [[ "\${INIT_RESULT}" == "timeout" ]]; then
     warn "open-webui-init не завершился за \${MAX_INIT_WAIT} сек"
-    warn "Проверьте логи: cd \${OPENWEBUI_DIR} && docker compose logs open-webui-init"
+    warn "Проверьте логи: cd \${OPENWEBUI_DIR} && \${OW_COMPOSE} logs open-webui-init"
   else
     warn "open-webui-init завершился с ошибкой (exit \${INIT_RESULT#failed:})"
-    warn "Логи: cd \${OPENWEBUI_DIR} && docker compose logs open-webui-init"
+    warn "Логи: cd \${OPENWEBUI_DIR} && \${OW_COMPOSE} logs open-webui-init"
   fi
 fi
 REMOTE_DEPLOY
