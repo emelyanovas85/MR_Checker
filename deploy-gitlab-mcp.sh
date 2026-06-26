@@ -458,9 +458,66 @@ echo -e "\${GREEN}              add_merge_request_diff_comment, get_merge_reques
 echo -e "\${GREEN}              set_merge_request_title, set_merge_request_description\${NC}"
 echo -e "\${GREEN} Режим      : stateful (сессия сохраняется между запросами)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${YELLOW} Следующий шаг — пересобрать Open WebUI:\${NC}"
-echo -e "  cd ~/open-webui && docker compose up -d --force-recreate open-webui-init"
-echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
+
+# ── Обновление Open WebUI: перезапуск open-webui-init ────────────────────────
+# open-webui-init — одноразовый контейнер (restart: "no"), который вызывает
+# API Open WebUI и регистрирует MCP-серверы из MCP_SERVER_URLS.
+# Перезапуск безопасен: основной контейнер open-webui не трогается,
+# пользователи ничего не почувствуют.
+OPENWEBUI_DIR="\${HOME}/open-webui"
+
+if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
+  warn "Open WebUI не найден в \${OPENWEBUI_DIR} — пропускаем обновление MCP-серверов"
+  warn "Зарегистрируйте MCP вручную: cd \${OPENWEBUI_DIR} && docker compose up -d --force-recreate open-webui-init"
+else
+  log "Обновление MCP-серверов в Open WebUI..."
+
+  # Определяем версию compose
+  if docker compose version >/dev/null 2>&1; then
+    OW_COMPOSE="docker compose"
+  else
+    OW_COMPOSE="docker-compose"
+  fi
+
+  cd "\${OPENWEBUI_DIR}"
+
+  # Останавливаем предыдущий init-контейнер если вдруг завис
+  \${OW_COMPOSE} stop open-webui-init 2>/dev/null || true
+  \${OW_COMPOSE} rm -f open-webui-init 2>/dev/null || true
+
+  # Запускаем open-webui-init
+  \${OW_COMPOSE} up -d --force-recreate open-webui-init
+  ok "open-webui-init запущен — регистрирует MCP-серверы..."
+
+  # Ждём завершения (exit 0 = успех, timeout 60 сек)
+  MAX_INIT_WAIT=60
+  INIT_ELAPSED=0
+  INIT_RESULT="timeout"
+  while [[ \${INIT_ELAPSED} -lt \${MAX_INIT_WAIT} ]]; do
+    INIT_STATUS=\$(docker inspect open-webui-init --format '{{.State.Status}}' 2>/dev/null || echo "missing")
+    if [[ "\${INIT_STATUS}" == "exited" ]]; then
+      EXIT_CODE=\$(docker inspect open-webui-init --format '{{.State.ExitCode}}' 2>/dev/null || echo "1")
+      if [[ "\${EXIT_CODE}" == "0" ]]; then
+        INIT_RESULT="ok"
+      else
+        INIT_RESULT="failed:\${EXIT_CODE}"
+      fi
+      break
+    fi
+    printf "."; sleep 3; INIT_ELAPSED=\$((INIT_ELAPSED + 3))
+  done
+  echo ""
+
+  if [[ "\${INIT_RESULT}" == "ok" ]]; then
+    ok "Open WebUI обновлён — MCP-серверы зарегистрированы ✓"
+  elif [[ "\${INIT_RESULT}" == "timeout" ]]; then
+    warn "open-webui-init не завершился за \${MAX_INIT_WAIT} сек"
+    warn "Проверьте логи: cd \${OPENWEBUI_DIR} && docker compose logs open-webui-init"
+  else
+    warn "open-webui-init завершился с ошибкой (exit \${INIT_RESULT#failed:})"
+    warn "Логи: cd \${OPENWEBUI_DIR} && docker compose logs open-webui-init"
+  fi
+fi
 REMOTE_DEPLOY
 
 ok "Деплой GitLab MR MCP на ${REMOTE_HOST} завершён успешно"
