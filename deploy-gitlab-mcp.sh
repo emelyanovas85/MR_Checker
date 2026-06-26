@@ -15,7 +15,7 @@
 # --mcp-port Порт MCP-сервера на удалённой машине (по умолчанию: 8083)
 # --gitlab-host Базовый URL GitLab (по умолчанию: http://10.1.5.6)
 # --token GitLab Personal Access Token (или через GITLAB_PERSONAL_ACCESS_TOKEN)
-# --min-access Минимальный уровень доступа для фильтрации проектов (необязательно)
+# --min-access Минимальный уровень доступа для фильтрации проектов (необязатеньно)
 # --project-search Строка поиска для фильтрации проектов (необязательно)
 # --help Показать справку
 #
@@ -67,7 +67,6 @@ REMOTE_USER="svc-local-adm"
 REMOTE_PORT="22"
 SSH_KEY=""
 BUILT_IMAGE_NAME="mcp/gitlab-mr:latest"
-# Официальный образ supergateway v3.2.0 с Docker Hub.
 SUPERGATEWAY_IMAGE="supercorp/supergateway:3.2.0"
 APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
@@ -75,8 +74,9 @@ GITLAB_HOST="http://10.1.5.6"
 GITLAB_PERSONAL_ACCESS_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN:-}"
 MIN_ACCESS_LEVEL=""
 PROJECT_SEARCH_TERM=""
+# Папка open-webui-deploy на удалённом хосте (см. emelyanovas85/open-webui-deploy)
+OPENWEBUI_DEPLOY_DIR="~/open-webui-deploy"
 
-# URL архива исходников
 SOURCE_ARCHIVE_URL="https://github.com/kopfrechner/gitlab-mr-mcp/archive/refs/heads/main.tar.gz"
 
 usage() {
@@ -103,7 +103,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Запрос токена если не задан ─────────────────────────────────────────────
 if [[ -z "${GITLAB_PERSONAL_ACCESS_TOKEN}" ]]; then
   echo -e "${YELLOW}Введите GitLab Personal Access Token:${NC} "
   read -r -s GITLAB_PERSONAL_ACCESS_TOKEN
@@ -130,18 +129,15 @@ SSH_BASE_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 \
 SSH_CMD="ssh ${SSH_BASE_OPTS} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST}"
 SCP_CMD="scp ${SSH_BASE_OPTS} -P ${REMOTE_PORT}"
 
-# ── Первое подключение ────────────────────────────────────────────────────────
 log "Подключение к ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}..."
 $SSH_CMD "echo ok" > /dev/null 2>&1 || error "Не удалось подключиться к ${REMOTE_HOST}"
 ok "Соединение установлено"
 
-# ── Проверка локальных зависимостей ───────────────────────────────────────────
 log "Проверка локальных зависимостей..."
 command -v docker >/dev/null 2>&1 || error "Локально не найден docker"
 command -v curl   >/dev/null 2>&1 || error "Локально не найден curl"
 ok "Локальные зависимости в порядке"
 
-# ── Проверка зависимостей на удалённой машине ─────────────────────────────────
 log "Проверка зависимостей на удалённой машине..."
 $SSH_CMD bash << 'REMOTE_CHECK'
 set -e
@@ -163,46 +159,34 @@ DOCKER_COMPOSE=$($SSH_CMD \
   'if docker compose version >/dev/null 2>&1; then echo "docker compose"; else echo "docker-compose"; fi')
 log "Используем compose: ${DOCKER_COMPOSE}"
 
-# ── Скачивание исходников kopfrechner/gitlab-mr-mcp ───────────────────────────
 log "Скачивание исходников gitlab-mr-mcp с GitHub..."
 SOURCE_ARCHIVE="$(mktemp /tmp/gitlab-mr-mcp-XXXXXX.tar.gz)"
 curl -sL "${SOURCE_ARCHIVE_URL}" -o "${SOURCE_ARCHIVE}" \
   || error "Не удалось скачать исходники с GitHub: ${SOURCE_ARCHIVE_URL}"
 ok "Исходники скачаны: ${SOURCE_ARCHIVE}"
 
-# ── Скачивание официального образа supergateway ───────────────────────────────
 log "Скачивание официального образа supergateway ${SUPERGATEWAY_IMAGE}..."
 docker pull "${SUPERGATEWAY_IMAGE}" \
   || error "Не удалось скачать образ ${SUPERGATEWAY_IMAGE}"
 ok "Образ ${SUPERGATEWAY_IMAGE} готов"
 
-# ── Сборка образа ─────────────────────────────────────────────────────────────
 log "Сборка образа ${BUILT_IMAGE_NAME}..."
 
 BUILD_CTX="$(mktemp -d /tmp/gitlab-mr-mcp-build-XXXXXX)"
-
-# Распаковываем исходники в build-контекст
 tar -xzf "${SOURCE_ARCHIVE}" -C "${BUILD_CTX}" --strip-components=1
 rm -f "${SOURCE_ARCHIVE}"
 
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
-# Этап 1: сборка Node.js приложения
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
-# Если проект TypeScript — собираем; если нет tsconfig, пропускаем
 RUN [ -f tsconfig.json ] && npm run build 2>/dev/null || true
 
-# Этап 2: финальный образ на базе supergateway
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
-# Копируем собранное приложение
 COPY --from=builder /app /app
-
-# supergateway запускается как ENTRYPOINT официального образа.
-# --stateful ОБЯЗАТЕЛЕН для сохранения MCP-сессии между запросами.
 CMD ["--stdio", "node dist/index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
@@ -217,13 +201,11 @@ docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
 rm -rf "${BUILD_CTX}"
 ok "Образ ${BUILT_IMAGE_NAME} собран"
 
-# ── Передача образа на сервер ──────────────────────────────────────────────────
 log "Передача образа ${BUILT_IMAGE_NAME} на ${REMOTE_HOST}..."
 docker save "${BUILT_IMAGE_NAME}" \
   | ssh ${SSH_BASE_OPTS} -p "${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_HOST}" 'docker load'
 ok "Образ загружен на ${REMOTE_HOST}"
 
-# ── Подготовка env и compose ──────────────────────────────────────────────────
 WORK_DIR="$(mktemp -d /tmp/gitlab-mcp-deploy-XXXXXX)"
 ENV_FILE="${WORK_DIR}/.env"
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
@@ -255,7 +237,6 @@ EOF_COMPOSE
 
 ok ".env и docker-compose.yml подготовлены"
 
-# ── Передача конфигурации на сервер ───────────────────────────────────────────
 log "Передача конфигурации на ${REMOTE_HOST}..."
 $SSH_CMD "mkdir -p ${APP_DIR}"
 $SCP_CMD "${ENV_FILE}"     "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/.env"
@@ -263,7 +244,6 @@ $SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/docker-comp
 rm -rf "${WORK_DIR}"
 ok "Конфигурация передана"
 
-# ── Деплой на сервере ─────────────────────────────────────────────────────────
 log "Деплой GitLab MR MCP на ${REMOTE_HOST}:${APP_DIR}"
 
 $SSH_CMD bash <<REMOTE_DEPLOY
@@ -278,14 +258,16 @@ fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 APP_DIR="${APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
+# Папка open-webui-deploy (репо emelyanovas85/open-webui-deploy)
+OPENWEBUI_DIR="${OPENWEBUI_DEPLOY_DIR}"
 
 [[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#\~/}"
+[[ "\${OPENWEBUI_DIR}" == ~* ]] && OPENWEBUI_DIR="\${HOME}/\${OPENWEBUI_DIR#\~/}"
 cd "\${APP_DIR}"
 
 [[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
 [[ ! -f docker-compose.yml ]] && fail "Не найден docker-compose.yml в \${APP_DIR}"
 
-# Проверка занятости порта
 PORT_IN_USE=false
 if ss -tln "( sport = :\${MCP_PORT} )" 2>/dev/null | grep -q LISTEN; then
   PORT_IN_USE=true
@@ -346,12 +328,9 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake (SSE-aware) ────────────────────────────────────
-# grep в подстановке $() возвращает exit 1 если ничего не нашёл.
-# При set -euo pipefail это роняет весь скрипт — защищаем через || true.
+# ── Проверка 2: MCP handshake ──────────────────────────────────────────────────
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
-# -- initialize --
 INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
 curl -s --noproxy localhost,127.0.0.1 \
   -X POST "http://localhost:\${MCP_PORT}/mcp" \
@@ -365,13 +344,11 @@ SESSION_ID=""
 INIT_OK=false
 
 if [[ -f "\${INIT_RESPONSE_FILE}.headers" ]]; then
-  # || true: grep вернёт exit 1 если заголовка нет — не роняем скрипт
   SESSION_ID=\$(grep -i '^mcp-session-id:' "\${INIT_RESPONSE_FILE}.headers" \
     | tr -d '\r' | awk '{print \$2}' | head -1 || true)
 fi
 
 if [[ -f "\${INIT_RESPONSE_FILE}.body" ]]; then
-  # || true: grep вернёт exit 1 если data-строк нет — не роняем скрипт
   INIT_DATA=\$(grep '^data:' "\${INIT_RESPONSE_FILE}.body" | sed 's/^data: //' | head -5 || true)
   if echo "\${INIT_DATA}" | grep -qiE 'serverInfo|protocolVersion'; then
     INIT_OK=true
@@ -386,7 +363,6 @@ else
   warn "initialize: ответ сервера не содержит serverInfo (SSE-тело пустое или таймаут)"
 fi
 
-# -- notifications/initialized --
 NOTIF_EXTRA_HEADERS=""
 [[ -n "\${SESSION_ID}" ]] && NOTIF_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
 eval curl -s --noproxy localhost,127.0.0.1 \
@@ -398,7 +374,6 @@ eval curl -s --noproxy localhost,127.0.0.1 \
   --max-time 5 >/dev/null 2>&1 || true
 ok "notifications/initialized: отправлено"
 
-# -- tools/list --
 LIST_EXTRA_HEADERS=""
 [[ -n "\${SESSION_ID}" ]] && LIST_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
 
@@ -411,7 +386,6 @@ eval curl -s --noproxy localhost,127.0.0.1 \
   -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
   --max-time 10 -o "\${LIST_RESPONSE_FILE}" 2>/dev/null || true
 
-# || true: grep вернёт exit 1 если data-строк нет — не роняем скрипт
 LIST_DATA=\$(grep '^data:' "\${LIST_RESPONSE_FILE}" | sed 's/^data: //' | head -5 || true)
 rm -f "\${LIST_RESPONSE_FILE}"
 
@@ -432,7 +406,7 @@ else
   warn "tools/list: неожиданный ответ: \${LIST_DATA:0:200}"
 fi
 
-# ── Проверка 3: CMD в инспекции контейнера ────────────────────────────────────
+# ── Проверка 3: --stateful ─────────────────────────────────────────────────────
 log "Проверка 3/3: флаг --stateful в конфигурации контейнера..."
 CONTAINER_CMD=\$(docker inspect gitlab-mcp --format '{{json .Config.Cmd}}' 2>/dev/null || echo "")
 if echo "\${CONTAINER_CMD}" | grep -q 'stateful'; then
@@ -455,18 +429,17 @@ echo -e "\${GREEN}              set_merge_request_title, set_merge_request_descr
 echo -e "\${GREEN} Режим      : stateful (сессия сохраняется между запросами)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 
-# ── Обновление Open WebUI: перезапуск open-webui-init ────────────────────────
-# open-webui-init — одноразовый контейнер (restart: "no"), который вызывает
-# API Open WebUI и регистрирует MCP-серверы из MCP_SERVER_URLS.
-# Перезапуск безопасен: основной контейнер open-webui не трогается,
-# пользователи ничего не почувствуют.
-OPENWEBUI_DIR="\${HOME}/open-webui"
+# ── Обновление Open WebUI через open-webui-init ────────────────────────────────────
+# open-webui-init — одноразовый контейнер (restart: "no") из emelyanovas85/open-webui-deploy.
+# Регистрирует MCP-серверы через API Open WebUI.
+# Безопасно — основной open-webui не трогается.
 
 if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
-  warn "Open WebUI не найден в \${OPENWEBUI_DIR} — пропускаем обновление MCP-серверов"
-  warn "Зарегистрируйте MCP вручную: cd \${OPENWEBUI_DIR} && docker compose up -d --force-recreate open-webui-init"
+  warn "open-webui-deploy не найден в \${OPENWEBUI_DIR}"
+  warn "Зарегистрируйте MCP вручную:"
+  warn "  cd \${OPENWEBUI_DIR} && docker-compose run --rm open-webui-init"
 else
-  log "Обновление MCP-серверов в Open WebUI..."
+  log "Обновление MCP-серверов в Open WebUI (через open-webui-init)..."
 
   if docker compose version >/dev/null 2>&1; then
     OW_COMPOSE="docker compose"
@@ -476,37 +449,17 @@ else
 
   cd "\${OPENWEBUI_DIR}"
 
-  \${OW_COMPOSE} stop open-webui-init 2>/dev/null || true
-  \${OW_COMPOSE} rm -f open-webui-init 2>/dev/null || true
+  # Удаляем оставшийся от предыдущего запуска
+  docker rm -f open-webui-init 2>/dev/null || true
 
-  \${OW_COMPOSE} up -d --force-recreate open-webui-init
-  ok "open-webui-init запущен — регистрирует MCP-серверы..."
+  # Запуск без пересборки всего стека: --no-deps только init-контейнер
+  INIT_EXIT=0
+  \${OW_COMPOSE} run --no-deps --rm --name open-webui-init open-webui-init || INIT_EXIT=\$?
 
-  MAX_INIT_WAIT=60
-  INIT_ELAPSED=0
-  INIT_RESULT="timeout"
-  while [[ \${INIT_ELAPSED} -lt \${MAX_INIT_WAIT} ]]; do
-    INIT_STATUS=\$(docker inspect open-webui-init --format '{{.State.Status}}' 2>/dev/null || echo "missing")
-    if [[ "\${INIT_STATUS}" == "exited" ]]; then
-      EXIT_CODE=\$(docker inspect open-webui-init --format '{{.State.ExitCode}}' 2>/dev/null || echo "1")
-      if [[ "\${EXIT_CODE}" == "0" ]]; then
-        INIT_RESULT="ok"
-      else
-        INIT_RESULT="failed:\${EXIT_CODE}"
-      fi
-      break
-    fi
-    printf "."; sleep 3; INIT_ELAPSED=\$((INIT_ELAPSED + 3))
-  done
-  echo ""
-
-  if [[ "\${INIT_RESULT}" == "ok" ]]; then
+  if [[ "\${INIT_EXIT}" == "0" ]]; then
     ok "Open WebUI обновлён — MCP-серверы зарегистрированы ✓"
-  elif [[ "\${INIT_RESULT}" == "timeout" ]]; then
-    warn "open-webui-init не завершился за \${MAX_INIT_WAIT} сек"
-    warn "Проверьте логи: cd \${OPENWEBUI_DIR} && \${OW_COMPOSE} logs open-webui-init"
   else
-    warn "open-webui-init завершился с ошибкой (exit \${INIT_RESULT#failed:})"
+    warn "open-webui-init завершился с ошибкой (exit \${INIT_EXIT})"
     warn "Логи: cd \${OPENWEBUI_DIR} && \${OW_COMPOSE} logs open-webui-init"
   fi
 fi
