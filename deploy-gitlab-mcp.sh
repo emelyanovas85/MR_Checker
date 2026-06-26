@@ -176,18 +176,19 @@ BUILD_CTX="$(mktemp -d /tmp/gitlab-mr-mcp-build-XXXXXX)"
 tar -xzf "${SOURCE_ARCHIVE}" -C "${BUILD_CTX}" --strip-components=1
 rm -f "${SOURCE_ARCHIVE}"
 
+# kopfrechner/gitlab-mr-mcp — чистый JavaScript-проект (index.js в корне).
+# Никакого TypeScript и dist/ нет — точка входа всегда /app/index.js.
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
-RUN [ -f tsconfig.json ] && npm run build 2>/dev/null || true
 
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
 COPY --from=builder /app /app
-CMD ["--stdio", "node dist/index.js", \
+CMD ["--stdio", "node index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
      "--streamableHttpPath", "/mcp", \
