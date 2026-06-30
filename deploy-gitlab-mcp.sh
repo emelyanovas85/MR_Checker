@@ -247,9 +247,11 @@ function patch(source) {
     }
 
     const [nameArg, descArg, schemaArg, handlerArg] = args.list;
-    // Rewrite: name, schema.describe(desc), handler
-    result += `${nameArg},\n  ${schemaArg}.describe(${descArg}),\n  ${handlerArg}`;
-    i = args.end; // skip past closing ')' of outer server.tool(...)
+    // Rewrite: name, schema.describe(desc), handler)
+    // NOTE: closing ')' of server.tool(...) is consumed by args.end
+    //       and must be explicitly re-emitted here.
+    result += `${nameArg},\n  ${schemaArg}.describe(${descArg}),\n  ${handlerArg})`;
+    i = args.end; // args.end points just past the consumed closing ')'
   }
 
   return result;
