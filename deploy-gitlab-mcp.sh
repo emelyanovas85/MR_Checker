@@ -48,6 +48,7 @@
 # POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC, отвечает SSE-потоком)
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
+# ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
 # =============================================================================
 
 set -euo pipefail
@@ -178,6 +179,9 @@ rm -f "${SOURCE_ARCHIVE}"
 
 # kopfrechner/gitlab-mr-mcp — чистый JavaScript-проект (index.js в корне).
 # Никакого TypeScript и dist/ нет — точка входа всегда /app/index.js.
+# ВАЖНО: "node" и "index.js" — строго отдельные элементы CMD.
+# Если написать "node index.js" как один элемент, execvp ищет бинарь
+# с именем «node index.js» (со пробелом) и сразу падает с ENOENT.
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
@@ -188,7 +192,7 @@ COPY . .
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
 COPY --from=builder /app /app
-CMD ["--stdio", "node index.js", \
+CMD ["--stdio", "node", "index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
      "--streamableHttpPath", "/mcp", \

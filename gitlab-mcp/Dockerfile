@@ -19,6 +19,11 @@
 #   3. POST tools/list / tools/call
 # В stateless-режиме шаги 2-3 попадают в новый процесс без инициализации
 # и возвращают пустой список или ошибку "No valid session ID provided".
+#
+# ВАЖНО: "node" и "index.js" — ОТДЕЛЬНЫЕ элементы массива CMD
+# supergateway передаёт CMD-аргументы напрямую в execvp().
+# Если написать ["--stdio", "node index.js", ...], execvp ищет бинарь
+# с именем «node index.js» (со пробелом) — и сразу падает с ENOENT.
 # =============================================================================
 
 FROM supercorp/supergateway:3.2.0
@@ -36,7 +41,8 @@ RUN npm install zod@">=3.0.0 <4.0.0" --save --no-fund --no-audit 2>/dev/null || 
 # supergateway запускается как ENTRYPOINT базового образа.
 # --stateful: сохраняет дочерний процесс между запросами одной MCP-сессии.
 # --outputTransport streamableHttp: требуется для Open WebUI v0.9.6+.
-CMD ["--stdio", "node index.js", \
+# ВАЖНО: "node" и "index.js" — строго отдельные элементы, не "node index.js".
+CMD ["--stdio", "node", "index.js", \
      "--port", "8083", \
      "--outputTransport", "streamableHttp", \
      "--streamableHttpPath", "/mcp", \
