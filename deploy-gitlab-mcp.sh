@@ -67,11 +67,13 @@
 #        Без фикса SDK сравнивает ZodObject через instanceof со своим zod@4
 #        и бросает:
 #          "Tool X expected a Zod schema or ToolAnnotations, but received an unrecognized object"
+#        Версии v3: 3.24.x → 3.25.76 (последняя v3) → затем вышел 4.0.0.
+#        Версии 3.25.1, 3.25.2 и т.п. НЕ СУЩЕСТВУЮТ.
 #        Фикс:
-#          1. npm pkg set dependencies.zod="3.25.2" — пин на минимально
-#             совместимую версию (SDK требует >=3.25)
-#          2. npm dedupe — схлопывает nested zod SDK в корневой zod@3.25.2,
-#             устраняя двойной экземпляр
+#          1. npm pkg set dependencies.zod="3.25.76" — пин на последнюю v3
+#             (SDK требует >=3.25; 3.24.x недостаточно)
+#          2. npm dedupe — схлопывает nested sdk/node_modules/zod@4 в корневой zod@3.25.76,
+#             устраняя двойной экземпляр и ошибку instanceof
 # =============================================================================
 
 set -euo pipefail
@@ -201,9 +203,9 @@ rm -f "${SOURCE_ARCHIVE}"
 
 # kopfrechner/gitlab-mr-mcp (main) содержит два бага — см. шапку скрипта.
 # Dockerfile применяет оба фикса:
-#   1. npm pkg set dependencies.zod="3.25.2" — пин на zod v3.25.2
-#      (SDK требует >=3.25; 3.24.x недостаточно)
-#   2. npm dedupe — схлопывает nested sdk/node_modules/zod@4 в корневой zod@3.25.2
+#   1. npm pkg set dependencies.zod="3.25.76" — пин на последнюю реальную v3
+#      (3.25.2 не существует; ветка v3: ...3.24.x → 3.25.76 → 4.0.0)
+#   2. npm dedupe — схлопывает nested sdk/node_modules/zod@4 в корневой zod@3.25.76
 #   3. node patch-index.mjs — переписывает 4-арг. server.tool() → 3-арг.
 cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
 import { readFileSync, writeFileSync } from 'fs';
@@ -315,12 +317,13 @@ cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-# FIX БАГ 2: пин zod@3.25.2
+# FIX БАГ 2: пин zod@3.25.76 (последняя версия ветки v3)
+#   - Версии 3.25.1, 3.25.2 и т.п. НЕ СУЩЕСТВУЮТ
+#   - Реальная последовательность: 3.24.x → 3.25.76 → 4.0.0
 #   - SDK @modelcontextprotocol/sdk требует zod >=3.25 (3.24.x недостаточно)
-#   - npm install без пина подтягивает zod@4.x (несовместим с SDK)
-#   - npm dedupe схлопывает nested sdk/node_modules/zod@4 → корневой zod@3.25.2,
+#   - npm dedupe схлопывает nested sdk/node_modules/zod@4 → корневой zod@3.25.76,
 #     устраняя двойной экземпляр и ошибку instanceof
-RUN npm pkg set dependencies.zod="3.25.2" && \
+RUN npm pkg set dependencies.zod="3.25.76" && \
     npm install --save --no-fund --no-audit && \
     npm dedupe --no-fund --no-audit
 COPY . .
@@ -537,7 +540,7 @@ try:
         headers={
             "Content-Type": "application/json",
             "Accept":       "text/event-stream, application/json",
-            **({"Mcp-Session-Id": sid} if sid else {})
+            **(({"Mcp-Session-Id": sid}) if sid else {})
         })
     conn2.getresponse().read()
     print("✓ notifications/initialized: отправлено")
