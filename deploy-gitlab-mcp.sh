@@ -189,7 +189,13 @@ rm -f "${SOURCE_ARCHIVE}"
 # SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. форму:
 #   server.tool(name, zodSchema.describe(description), handler)
 # patch-index.mjs читает index.js как текст и переписывает
-# все вызовы server.tool() через regex-замену одного паттерна.
+# все вызовы server.tool() через посимвольный обход с подсчётом вложенности.
+#
+# ВАЖНО: depth отслеживает ТОЛЬКО круглые скобки ( ).
+# Фигурные { } и квадратные [ ] отслеживаются в nestDepth.
+# Это нужно потому что закрывающая } тела async-handler-а
+# встречается ВНУТРИ аргументов server.tool() и не должна
+# сбрасывать depth до нуля раньше финальной ) вызова.
 cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
 import { readFileSync, writeFileSync } from 'fs';
 
@@ -211,6 +217,11 @@ const src = readFileSync('/app/index.js', 'utf8');
 //
 // Strategy: find server.tool( calls and rewrite 4-arg -> 3-arg using
 // a stateful bracket-counting pass so we handle nested objects correctly.
+//
+// KEY INVARIANT: `parenDepth` counts only ( and ).
+// `nestDepth` counts { } and [ ] separately.
+// This ensures that the closing } of an async handler body does NOT
+// decrement parenDepth to 0 — only the final ) of server.tool(...) does.
 
 function patch(source) {
   const MARKER = 'server.tool(';
@@ -247,9 +258,13 @@ function patch(source) {
 // Parse comma-separated top-level arguments starting at position `start`
 // (just after the opening paren of server.tool). Returns:
 //   { list: string[], end: number }  where end points just after the closing ')'
+//
+// parenDepth: tracks ( and ) only — reaches 0 at the closing ) of server.tool(...)
+// nestDepth:  tracks { } and [ ] — never triggers end-of-arglist
 function parseArgs(src, start) {
   const list = [];
-  let depth = 1; // we're inside the outer '(' already
+  let parenDepth = 1; // we're inside the outer '(' of server.tool already
+  let nestDepth  = 0; // tracks { } and [ ] nesting inside arguments
   let argStart = start;
   let i = start;
 
@@ -274,18 +289,24 @@ function parseArgs(src, start) {
       continue;
     }
 
-    if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue; }
-    if (ch === ')' || ch === ']' || ch === '}') {
-      depth--;
-      if (depth === 0) {
-        // closing paren of server.tool(...)
+    // Round parens: only these control top-level argument boundary
+    if (ch === '(') { parenDepth++; i++; continue; }
+    if (ch === ')') {
+      parenDepth--;
+      if (parenDepth === 0 && nestDepth === 0) {
+        // This is the closing ) of server.tool(...)
         list.push(src.slice(argStart, i).trim());
         return { list, end: i + 1 };
       }
       i++; continue;
     }
 
-    if (ch === ',' && depth === 1) {
+    // Curly and square brackets: tracked separately, never end the arg list
+    if (ch === '{' || ch === '[') { nestDepth++; i++; continue; }
+    if (ch === '}' || ch === ']') { nestDepth--; i++; continue; }
+
+    // Comma at top level (parenDepth===1, nestDepth===0) separates arguments
+    if (ch === ',' && parenDepth === 1 && nestDepth === 0) {
       list.push(src.slice(argStart, i).trim());
       argStart = i + 1;
       i++; continue;
@@ -561,7 +582,7 @@ try:
                   headers={
                       "Content-Type": "application/json",
                       "Accept":       "text/event-stream, application/json",
-                      **({"Mcp-Session-Id": sid} if sid else {})
+                      **({} if not sid else {"Mcp-Session-Id": sid})
                   })
     conn2.getresponse().read()
     print("✓ notifications/initialized: отправлено")
