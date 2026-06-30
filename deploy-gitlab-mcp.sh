@@ -49,14 +49,23 @@
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
-# ВАЖНО: kopfrechner/gitlab-mr-mcp (ветка main, апрель 2025) содержит баг:
-#        index.js использует устаревший 4-арг. API:
+# ВАЖНО: kopfrechner/gitlab-mr-mcp (ветка main, апрель 2025) содержит два бага:
+#
+#   БАГ 1 — устаревший API server.tool():
+#        index.js использует 4-арг. API:
 #          server.tool(name, description, zodSchema, handler)
 #        Тогда как SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. API:
 #          server.tool(name, zodSchemaWithDescription, handler)
-#        Инструменты регистрируются с пустым списком (tools/list возвращает []).
-#        Фикс: patch-index.mjs при сборке переписывает index.js через AST-парсер,
+#        Фикс: patch-index.mjs при сборке переписывает index.js,
 #        преобразуя все вызовы server.tool(n,d,s,fn) → server.tool(n,s.describe(d),fn).
+#
+#   БАГ 2 — несовместимая версия zod:
+#        package.json указывает "zod": "^3.x", но npm install без пина
+#        подтягивает zod@4.x (мажорный релиз вышел в 2025).
+#        SDK @modelcontextprotocol/sdk@1.29.0 ожидает объекты Zod v3 —
+#        ZodObject из Zod v4 не распознаётся и бросает:
+#          "Tool X expected a Zod schema or ToolAnnotations, but received an unrecognized object"
+#        Фикс: Dockerfile явно пинит zod@3.24.0 через npm pkg set перед install.
 # =============================================================================
 
 set -euo pipefail
@@ -184,18 +193,10 @@ BUILD_CTX="$(mktemp -d /tmp/gitlab-mr-mcp-build-XXXXXX)"
 tar -xzf "${SOURCE_ARCHIVE}" -C "${BUILD_CTX}" --strip-components=1
 rm -f "${SOURCE_ARCHIVE}"
 
-# kopfrechner/gitlab-mr-mcp (main) содержит баг: index.js вызывает
-# server.tool(name, description, zodSchema, handler) — 4-арг. API устаревшего SDK.
-# SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. форму:
-#   server.tool(name, zodSchema.describe(description), handler)
-# patch-index.mjs читает index.js как текст и переписывает
-# все вызовы server.tool() через посимвольный обход с подсчётом вложенности.
-#
-# ВАЖНО: depth отслеживает ТОЛЬКО круглые скобки ( ).
-# Фигурные { } и квадратные [ ] отслеживаются в nestDepth.
-# Это нужно потому что закрывающая } тела async-handler-а
-# встречается ВНУТРИ аргументов server.tool() и не должна
-# сбрасывать depth до нуля раньше финальной ) вызова.
+# kopfrechner/gitlab-mr-mcp (main) содержит два бага — см. шапку скрипта.
+# Dockerfile применяет оба фикса:
+#   1. npm pkg set dependencies.zod="3.24.0" — пинит zod на v3 (v4 несовместим с SDK)
+#   2. node patch-index.mjs — переписывает 4-арг. server.tool() → 3-арг.
 cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
 import { readFileSync, writeFileSync } from 'fs';
 
@@ -352,10 +353,12 @@ cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --no-fund --no-audit
+# FIX: pin zod to v3 — npm resolves zod@^3 to zod@4.x (new major released 2025)
+# which is incompatible with @modelcontextprotocol/sdk@1.29.0 (expects Zod v3 objects)
+RUN npm pkg set dependencies.zod="3.24.0" && \
+    npm install --save --no-fund --no-audit
 COPY . .
-# Patch index.js: rewrite 4-arg server.tool(name,desc,schema,fn)
-#                 -> 3-arg server.tool(name,schema.describe(desc),fn)
+# FIX: rewrite 4-arg server.tool(name,desc,schema,fn) -> 3-arg server.tool(name,schema.describe(desc),fn)
 # required by @modelcontextprotocol/sdk >= 1.2 (upstream bug in kopfrechner/gitlab-mr-mcp)
 RUN node patch-index.mjs && rm patch-index.mjs
 
