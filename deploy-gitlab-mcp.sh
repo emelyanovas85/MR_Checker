@@ -54,10 +54,16 @@
 #   БАГ 1 — устаревший API server.tool():
 #        index.js использует 4-арг. API:
 #          server.tool(name, description, zodSchema, handler)
-#        Тогда как SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. API:
-#          server.tool(name, zodSchemaWithDescription, handler)
+#        Тогда как SDK @modelcontextprotocol/sdk@^1.29.0 ожидает ZodRawShape,
+#        а не ZodObject — функция isZodRawShapeCompat() в SDK явно отклоняет
+#        ZodSchema-инстансы через instanceof-проверку и бросает:
+#          "Tool X expected a Zod schema or ToolAnnotations, but received an unrecognized object"
 #        Фикс: patch-index.mjs при сборке переписывает index.js,
-#        преобразуя все вызовы server.tool(n,d,s,fn) → server.tool(n,s.describe(d),fn).
+#        заменяя zodSchema на zodSchema.shape во всех вызовах server.tool():
+#          server.tool(n, d, z.object({...}), fn)
+#          → server.tool(n, d, z.object({...}).shape, fn)
+#        Таким образом передаётся plain object {key: ZodType}, который
+#        isZodRawShapeCompat() принимает корректно.
 #
 #   БАГ 2 — несовместимая версия zod:
 #        package.json указывает "zod": "^3.x", но:
@@ -206,7 +212,8 @@ rm -f "${SOURCE_ARCHIVE}"
 #   1. npm pkg set dependencies.zod="3.25.76" — пин на последнюю реальную v3
 #      (3.25.2 не существует; ветка v3: ...3.24.x → 3.25.76 → 4.0.0)
 #   2. npm dedupe — схлопывает nested sdk/node_modules/zod@4 в корневой zod@3.25.76
-#   3. node patch-index.mjs — переписывает 4-арг. server.tool() → 3-арг.
+#   3. node patch-index.mjs — заменяет z.object({...}) на z.object({...}).shape
+#      во всех вызовах server.tool(), передавая ZodRawShape вместо ZodObject
 cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
 import { readFileSync, writeFileSync } from 'fs';
 
@@ -232,7 +239,9 @@ function patch(source) {
     }
 
     const [nameArg, descArg, schemaArg, handlerArg] = args.list;
-    result += `${nameArg},\n  ${schemaArg}.describe(${descArg}),\n  ${handlerArg})`;
+    // SDK isZodRawShapeCompat() rejects ZodSchema instances (instanceof check).
+    // Must pass plain ZodRawShape: z.object({...}).shape
+    result += `${nameArg},\n  ${descArg},\n  ${schemaArg}.shape,\n  ${handlerArg})`;
     i = args.end;
   }
 
@@ -308,8 +317,8 @@ function skipString(src, i) {
 }
 
 const patched = patch(src);
-const count = (patched.match(/\.describe\(/g) || []).length;
-console.log(`patch-index: patched ${count} server.tool() call(s)`);
+const count = (patched.match(/\.shape,/g) || []).length;
+console.log(`patch-index: patched ${count} server.tool() call(s) — z.object({...}) → z.object({...}).shape`);
 writeFileSync('/app/index.js', patched, 'utf8');
 PATCH_EOF
 
@@ -327,7 +336,9 @@ RUN npm pkg set dependencies.zod="3.25.76" && \
     npm install --save --no-fund --no-audit && \
     npm dedupe --no-fund --no-audit
 COPY . .
-# FIX БАГ 1: переписываем 4-арг. server.tool() → 3-арг. через AST-патч
+# FIX БАГ 1: заменяем z.object({...}) → z.object({...}).shape во всех server.tool()
+#   SDK isZodRawShapeCompat() отклоняет ZodSchema-инстансы (instanceof-проверка).
+#   Нужен plain object {key: ZodType} — именно это возвращает .shape
 RUN node patch-index.mjs && rm patch-index.mjs
 
 FROM ${SUPERGATEWAY_IMAGE}
@@ -540,7 +551,7 @@ try:
         headers={
             "Content-Type": "application/json",
             "Accept":       "text/event-stream, application/json",
-            **(({"Mcp-Session-Id": sid}) if sid else {})
+            **((({"Mcp-Session-Id": sid}) if sid else {}))
         })
     conn2.getresponse().read()
     print("✓ notifications/initialized: отправлено")
