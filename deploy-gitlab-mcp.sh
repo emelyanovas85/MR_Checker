@@ -49,15 +49,14 @@
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
-# ВАЖНО: zod должен быть зафиксирован на версии 3.25.x.
-#        @modelcontextprotocol/sdk требует "zod": "^3.25 || ^4.0".
-#        Если в корне стоит zod@3.24.x (< 3.25), npm докачивает
-#        отдельный zod@4.x в node_modules/@modelcontextprotocol/sdk/node_modules/.
-#        Два экземпляра zod — разные объекты, instanceof падает:
-#          "Tool get_projects expected a Zod schema or ToolAnnotations,
-#           but received an unrecognized object"
-#        Фикс: фиксируем zod@3.25.x — SDK берёт единственный экземпляр из
-#        корня, вложенной копии zod@4 нет.
+# ВАЖНО: kopfrechner/gitlab-mr-mcp (ветка main, апрель 2025) содержит баг:
+#        index.js использует устаревший 4-арг. API:
+#          server.tool(name, description, zodSchema, handler)
+#        Тогда как SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. API:
+#          server.tool(name, zodSchemaWithDescription, handler)
+#        Инструменты регистрируются с пустым списком (tools/list возвращает []).
+#        Фикс: patch-index.mjs при сборке переписывает index.js через AST-парсер,
+#        преобразуя все вызовы server.tool(n,d,s,fn) → server.tool(n,s.describe(d),fn).
 # =============================================================================
 
 set -euo pipefail
@@ -185,24 +184,157 @@ BUILD_CTX="$(mktemp -d /tmp/gitlab-mr-mcp-build-XXXXXX)"
 tar -xzf "${SOURCE_ARCHIVE}" -C "${BUILD_CTX}" --strip-components=1
 rm -f "${SOURCE_ARCHIVE}"
 
-# kopfrechner/gitlab-mr-mcp — чистый JavaScript-проект (index.js в корне).
-# Никакого TypeScript и dist/ нет — точка входа всегда /app/index.js.
-# ВАЖНО: "node" и "index.js" — строго отдельные элементы CMD.
-# ВАЖНО: zod фиксируется на 3.25.x (не 3.24.x!).
-# @modelcontextprotocol/sdk требует "^3.25 || ^4.0" — 3.24.x не удовлетворяет
-# условию ^3.25, поэтому npm докачивает вложенный zod@4.x для SDK.
-# Два экземпляра zod — instanceof падает с ошибкой:
-#   "Tool get_projects expected a Zod schema or ToolAnnotations, but received an unrecognized object"
-# Фикс: zod@3.25.x попадает под ^3.25, SDK берёт единственный экземпляр из корня.
+# kopfrechner/gitlab-mr-mcp (main) содержит баг: index.js вызывает
+# server.tool(name, description, zodSchema, handler) — 4-арг. API устаревшего SDK.
+# SDK @modelcontextprotocol/sdk@^1.29.0 требует 3-арг. форму:
+#   server.tool(name, zodSchema.describe(description), handler)
+# patch-index.mjs читает index.js как текст и переписывает
+# все вызовы server.tool() через regex-замену одного паттерна.
+cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
+import { readFileSync, writeFileSync } from 'fs';
+
+const src = readFileSync('/app/index.js', 'utf8');
+
+// Match: server.tool(
+//   "name",
+//   "description string",
+//   z.object({...}),
+//   async (...) => {...}
+// );
+//
+// Transform to:
+// server.tool(
+//   "name",
+//   z.object({...}).describe("description string"),
+//   async (...) => {...}
+// );
+//
+// Strategy: find server.tool( calls and rewrite 4-arg -> 3-arg using
+// a stateful bracket-counting pass so we handle nested objects correctly.
+
+function patch(source) {
+  const MARKER = 'server.tool(';
+  let result = '';
+  let i = 0;
+
+  while (i < source.length) {
+    const idx = source.indexOf(MARKER, i);
+    if (idx === -1) {
+      result += source.slice(i);
+      break;
+    }
+
+    // Copy everything up to and including 'server.tool('
+    result += source.slice(i, idx + MARKER.length);
+    i = idx + MARKER.length;
+
+    // Parse the argument list by tracking parens/brackets/braces/strings
+    const args = parseArgs(source, i);
+    if (args === null || args.list.length !== 4) {
+      // Not a 4-arg call — leave as-is
+      continue;
+    }
+
+    const [nameArg, descArg, schemaArg, handlerArg] = args.list;
+    // Rewrite: name, schema.describe(desc), handler
+    result += `${nameArg},\n  ${schemaArg}.describe(${descArg}),\n  ${handlerArg}`;
+    i = args.end; // skip past closing ')' of outer server.tool(...)
+  }
+
+  return result;
+}
+
+// Parse comma-separated top-level arguments starting at position `start`
+// (just after the opening paren of server.tool). Returns:
+//   { list: string[], end: number }  where end points just after the closing ')'
+function parseArgs(src, start) {
+  const list = [];
+  let depth = 1; // we're inside the outer '(' already
+  let argStart = start;
+  let i = start;
+
+  while (i < src.length) {
+    const ch = src[i];
+
+    if (ch === '"' || ch === "'" || ch === '`') {
+      i = skipString(src, i);
+      continue;
+    }
+
+    if (ch === '/' && src[i + 1] === '/') {
+      // line comment
+      const nl = src.indexOf('\n', i);
+      i = nl === -1 ? src.length : nl + 1;
+      continue;
+    }
+
+    if (ch === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      i = end === -1 ? src.length : end + 2;
+      continue;
+    }
+
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) {
+        // closing paren of server.tool(...)
+        list.push(src.slice(argStart, i).trim());
+        return { list, end: i + 1 };
+      }
+      i++; continue;
+    }
+
+    if (ch === ',' && depth === 1) {
+      list.push(src.slice(argStart, i).trim());
+      argStart = i + 1;
+      i++; continue;
+    }
+
+    i++;
+  }
+
+  return null; // unterminated
+}
+
+function skipString(src, i) {
+  const quote = src[i];
+  i++;
+  while (i < src.length) {
+    if (src[i] === '\\') { i += 2; continue; }
+    if (src[i] === quote) return i + 1;
+    // template literal: handle ${ ... }
+    if (quote === '`' && src[i] === '$' && src[i + 1] === '{') {
+      i += 2;
+      let depth = 1;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  return i;
+}
+
+const patched = patch(src);
+const count = (patched.match(/\.describe\(/g) || []).length;
+console.log(`patch-index: patched ${count} server.tool() call(s)`);
+writeFileSync('/app/index.js', patched, 'utf8');
+PATCH_EOF
+
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-# zod@3.25.x — минимально необходимая версия для единого экземпляра zod
-# между index.js и @modelcontextprotocol/sdk (dual-package hazard fix).
-RUN npm pkg set dependencies.zod="3.25.3" && \
-    npm install --save --no-fund --no-audit
+RUN npm install --no-fund --no-audit
 COPY . .
+# Patch index.js: rewrite 4-arg server.tool(name,desc,schema,fn)
+#                 -> 3-arg server.tool(name,schema.describe(desc),fn)
+# required by @modelcontextprotocol/sdk >= 1.2 (upstream bug in kopfrechner/gitlab-mr-mcp)
+RUN node patch-index.mjs && rm patch-index.mjs
 
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
@@ -347,7 +479,7 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Про─верка 2: MCP handshake ──────────────────────────────────────────────────
+# ── Проверка 2: MCP handshake ──────────────────────────────────────────────────
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
 INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
