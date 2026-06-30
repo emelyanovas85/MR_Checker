@@ -208,13 +208,6 @@ BUILD_CTX="$(mktemp -d /tmp/gitlab-mr-mcp-build-XXXXXX)"
 tar -xzf "${SOURCE_ARCHIVE}" -C "${BUILD_CTX}" --strip-components=1
 rm -f "${SOURCE_ARCHIVE}"
 
-# kopfrechner/gitlab-mr-mcp (main) содержит два бага — см. шапку скрипта.
-# Dockerfile применяет оба фикса:
-#   1. npm pkg set dependencies.zod="3.25.76" — пин на последнюю реальную v3
-#      (3.25.2 не существует; ветка v3: ...3.24.x → 3.25.76 → 4.0.0)
-#   2. npm dedupe — схлопывает nested sdk/node_modules/zod@4 в корневой zod@3.25.76
-#   3. node patch-index.mjs — заменяет z.object({...}) на z.object({...}).shape
-#      во всех вызовах server.tool(), передавая ZodRawShape вместо ZodObject
 cat > "${BUILD_CTX}/patch-index.mjs" <<'PATCH_EOF'
 import { readFileSync, writeFileSync } from 'fs';
 
@@ -240,8 +233,6 @@ function patch(source) {
     }
 
     const [nameArg, descArg, schemaArg, handlerArg] = args.list;
-    // SDK isZodRawShapeCompat() rejects ZodSchema instances (instanceof check).
-    // Must pass plain ZodRawShape: z.object({...}).shape
     result += `${nameArg},\n  ${descArg},\n  ${schemaArg}.shape,\n  ${handlerArg})`;
     i = args.end;
   }
@@ -319,7 +310,7 @@ function skipString(src, i) {
 
 const patched = patch(src);
 const count = (patched.match(/\.shape,/g) || []).length;
-console.log(`patch-index: patched ${count} server.tool() call(s) — z.object({...}) → z.object({...}).shape`);
+console.log(`patch-index: patched ${count} server.tool() call(s)`);
 writeFileSync('/app/index.js', patched, 'utf8');
 PATCH_EOF
 
@@ -327,26 +318,15 @@ cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-# FIX БАГ 2: пин zod@3.25.76 (последняя версия ветки v3)
-#   - Версии 3.25.1, 3.25.2 и т.п. НЕ СУЩЕСТВУЮТ
-#   - Реальная последовательность: 3.24.x → 3.25.76 → 4.0.0
-#   - SDK @modelcontextprotocol/sdk требует zod >=3.25 (3.24.x недостаточно)
-#   - npm dedupe схлопывает nested sdk/node_modules/zod@4 → корневой zod@3.25.76,
-#     устраняя двойной экземпляр и ошибку instanceof
 RUN npm pkg set dependencies.zod="3.25.76" && \
     npm install --save --no-fund --no-audit && \
     npm dedupe --no-fund --no-audit
 COPY . .
-# FIX БАГ 1: заменяем z.object({...}) → z.object({...}).shape во всех server.tool()
-#   SDK isZodRawShapeCompat() отклоняет ZodSchema-инстансы (instanceof-проверка).
-#   Нужен plain object {key: ZodType} — именно это возвращает .shape
 RUN node patch-index.mjs && rm patch-index.mjs
 
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
 COPY --from=builder /app /app
-# Stateless режим: --stateful НЕ указан.
-# Open WebUI вызывает tools/list напрямую без сессионного handshake.
 CMD ["--stdio", "node", "index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
@@ -448,14 +428,14 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MR MCP сервера (supergateway, Streamable HTTP, stateless)..."
+log "Запуск GitLab MR MCP сервера..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
 log "Проверка статуса контейнера..."
 sleep 5
 if ! docker ps --filter 'name=gitlab-mcp' --format '{{.Names}}' | grep -q '^gitlab-mcp\$'; then
-  warn "Контейнер не перешёл в состояние running. Последние логи:"
+  warn "Контейнер не перешёл в running. Последние логи:"
   eval "\${DOCKER_COMPOSE} logs --tail=100"
   fail "GitLab MCP не запущен"
 fi
@@ -487,75 +467,31 @@ else
 fi
 
 # ── Проверка 2: MCP stateless tools/list ─────────────────────────────────────
+# supergateway требует оба MIME-типа в Accept:
+# Accept: text/event-stream, application/json
 log "Проверка 2/3: MCP stateless tools/list..."
+MCP_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 --max-time 10 \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream, application/json' \
+  -d '{"jsonrpc":"2.0","id":"check-1","method":"tools/list","params":{}}' \
+  http://localhost:\${MCP_PORT}/mcp 2>/dev/null || echo "CURL_FAILED")
 
-python3 - "\${MCP_PORT}" <<'PYEOF'
-import http.client, json, sys
-
-port    = int(sys.argv[1])
-host    = "localhost"
-TIMEOUT = 15
-
-def sse_post(conn, path, body, extra_headers=None):
-    headers = {
-        "Content-Type": "application/json",
-        "Accept":       "text/event-stream, application/json",
-    }
-    if extra_headers:
-        headers.update(extra_headers)
-    conn.request("POST", path, body=json.dumps(body), headers=headers)
-    resp = conn.getresponse()
-    session_id = resp.getheader("Mcp-Session-Id") or ""
-    events = []
-    buf    = b""
-    try:
-        while True:
-            chunk = resp.read(4096)
-            if not chunk:
-                break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                line = line.decode("utf-8", errors="replace").rstrip("\r")
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                    if payload:
-                        try:
-                            events.append(json.loads(payload))
-                        except json.JSONDecodeError:
-                            pass
-                if line == "" and events:
-                    break
-    except Exception:
-        pass
-    return session_id, events
-
-try:
-    conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
-    _, list_events = sse_post(conn, "/mcp",
-        {"jsonrpc": "2.0", "id": "list-1", "method": "tools/list", "params": {}}
-    )
-    tools = []
-    for ev in list_events:
-        tools = (ev.get("result") or {}).get("tools", tools)
-
-    if tools:
-        names = [t.get("name", "?") for t in tools]
-        print(f"✓ tools/list: OK — инструментов: {len(tools)}")
-        if "add_merge_request_comment" in names:
-            print("✓ add_merge_request_comment: ДОСТУПЕН ✓")
-        else:
-            print(f"⚠ add_merge_request_comment не найден. Список: {names}")
-    else:
-        err_msg = next((ev["error"].get("message", "") for ev in list_events if "error" in ev), "")
-        if err_msg:
-            print(f"⚠ tools/list вернул ошибку: {err_msg}")
-        else:
-            print(f"⚠ tools/list: пустой ответ")
-except Exception as e:
-    print(f"⚠ MCP tools/list исключение: {e}")
-    print("  Проверьте: docker logs gitlab-mcp | tail -20")
-PYEOF
+if echo "\${MCP_RESPONSE}" | grep -q '"tools"'; then
+  TOOL_COUNT=\$(echo "\${MCP_RESPONSE}" | grep -o '"name"' | wc -l)
+  ok "tools/list: OK — инструментов: \${TOOL_COUNT}"
+  if echo "\${MCP_RESPONSE}" | grep -q '"add_merge_request_comment"'; then
+    ok "add_merge_request_comment: ДОСТУПЕН ✓"
+  else
+    warn "add_merge_request_comment не найден в ответе"
+  fi
+elif echo "\${MCP_RESPONSE}" | grep -q '"error"'; then
+  ERR=\$(echo "\${MCP_RESPONSE}" | grep -o '"message":"[^"]*"' | head -1)
+  warn "tools/list вернул ошибку: \${ERR}"
+elif [[ "\${MCP_RESPONSE}" == "CURL_FAILED" ]]; then
+  warn "tools/list: curl не ответил за 10 сек — проверьте docker logs gitlab-mcp"
+else
+  warn "tools/list: неожиданный ответ: \${MCP_RESPONSE:0:200}"
+fi
 
 # ── Проверка 3: режим stateless ───────────────────────────────────────────────
 log "Проверка 3/3: режим stateless в конфигурации контейнера..."
