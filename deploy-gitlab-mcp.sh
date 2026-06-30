@@ -479,83 +479,129 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake ──────────────────────────────────────────────────
+# ── Проверка 2: MCP handshake через python3 ───────────────────────────────────
+# В stateful-режиме supergateway выдаёт Mcp-Session-Id при initialize.
+# Последующие запросы (notifications/initialized, tools/list) ОБЯЗАНЫ нести
+# этот заголовок — иначе сервер возвращает пустое тело.
+# bash+curl не подходит: curl с --max-time обрывает SSE-поток раньше, чем
+# сервер успевает отправить ответ, и SESSION_ID остаётся пустым.
+# python3 (http.client) читает поток построчно и корректно извлекает данные.
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
-INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
-curl -s --noproxy localhost,127.0.0.1 \
-  -X POST "http://localhost:\${MCP_PORT}/mcp" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream, application/json' \
-  -D "\${INIT_RESPONSE_FILE}.headers" \
-  -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
-  --max-time 8 -o "\${INIT_RESPONSE_FILE}.body" 2>/dev/null || true
+python3 - "\${MCP_PORT}" <<'PYEOF'
+import http.client, json, sys, time
 
-SESSION_ID=""
-INIT_OK=false
+port   = int(sys.argv[1])
+host   = "localhost"
+TIMEOUT = 15   # секунд на каждый запрос
 
-if [[ -f "\${INIT_RESPONSE_FILE}.headers" ]]; then
-  SESSION_ID=\$(grep -i '^mcp-session-id:' "\${INIT_RESPONSE_FILE}.headers" \
-    | tr -d '\r' | awk '{print \$2}' | head -1 || true)
-fi
+def sse_post(conn, path, body, extra_headers=None):
+    """POST JSON-RPC, читать SSE-поток, вернуть (session_id, list[dict])."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept":       "text/event-stream, application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    conn.request("POST", path, body=json.dumps(body), headers=headers)
+    resp = conn.getresponse()
 
-if [[ -f "\${INIT_RESPONSE_FILE}.body" ]]; then
-  INIT_DATA=\$(grep '^data:' "\${INIT_RESPONSE_FILE}.body" | sed 's/^data: //' | head -5 || true)
-  if echo "\${INIT_DATA}" | grep -qiE 'serverInfo|protocolVersion'; then
-    INIT_OK=true
-  fi
-fi
+    session_id = resp.getheader("Mcp-Session-Id") or ""
+    events     = []
+    buf        = b""
 
-rm -f "\${INIT_RESPONSE_FILE}" "\${INIT_RESPONSE_FILE}.headers" "\${INIT_RESPONSE_FILE}.body"
+    try:
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.decode("utf-8", errors="replace").rstrip("\r")
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                    if payload:
+                        try:
+                            events.append(json.loads(payload))
+                        except json.JSONDecodeError:
+                            pass
+                # blank line = end of one SSE event; if we have data, stop
+                if line == "" and events:
+                    break
+    except Exception:
+        pass
 
-if [[ "\${INIT_OK}" == "true" ]]; then
-  ok "initialize: OK (session=\${SESSION_ID:-none})"
-else
-  warn "initialize: ответ сервера не содержит serverInfo (SSE-тело пустое или таймаут)"
-fi
+    return session_id, events
 
-NOTIF_EXTRA_HEADERS=""
-[[ -n "\${SESSION_ID}" ]] && NOTIF_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
-eval curl -s --noproxy localhost,127.0.0.1 \
-  -X POST "http://localhost:\${MCP_PORT}/mcp" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream, application/json' \
-  \${NOTIF_EXTRA_HEADERS} \
-  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  --max-time 5 >/dev/null 2>&1 || true
-ok "notifications/initialized: отправлено"
+try:
+    conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
 
-LIST_EXTRA_HEADERS=""
-[[ -n "\${SESSION_ID}" ]] && LIST_EXTRA_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+    # ── initialize ────────────────────────────────────────────────────────────
+    sid, events = sse_post(conn, "/mcp", {
+        "jsonrpc": "2.0", "id": "init-1", "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "deploy-check", "version": "1.0"}
+        }
+    })
 
-LIST_RESPONSE_FILE=\$(mktemp /tmp/mcp-list-XXXXXX)
-eval curl -s --noproxy localhost,127.0.0.1 \
-  -X POST "http://localhost:\${MCP_PORT}/mcp" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream, application/json' \
-  \${LIST_EXTRA_HEADERS} \
-  -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
-  --max-time 10 -o "\${LIST_RESPONSE_FILE}" 2>/dev/null || true
+    has_server_info = any("serverInfo" in e or "protocolVersion" in e for e in events)
+    if has_server_info:
+        print(f"✓ initialize: OK  session={sid or 'stateless'}")
+    else:
+        print(f"⚠ initialize: serverInfo не найден в ответе  session={sid or 'нет'}")
 
-LIST_DATA=\$(grep '^data:' "\${LIST_RESPONSE_FILE}" | sed 's/^data: //' | head -5 || true)
-rm -f "\${LIST_RESPONSE_FILE}"
+    # ── notifications/initialized ─────────────────────────────────────────────
+    extra = {"Mcp-Session-Id": sid} if sid else {}
+    conn2 = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
+    conn2.request("POST", "/mcp",
+                  body=json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                  headers={
+                      "Content-Type": "application/json",
+                      "Accept":       "text/event-stream, application/json",
+                      **({"Mcp-Session-Id": sid} if sid else {})
+                  })
+    conn2.getresponse().read()
+    print("✓ notifications/initialized: отправлено")
 
-if [[ -z "\${LIST_DATA}" ]]; then
-  warn "tools/list: пустой ответ (нет SSE data-строк). Session ID: '\${SESSION_ID:-не получен}'"
-elif echo "\${LIST_DATA}" | grep -q '"tools"'; then
-  TOOL_COUNT=\$(echo "\${LIST_DATA}" | grep -o '"name"' | wc -l)
-  ok "tools/list: OK — инструментов обнаружено: \${TOOL_COUNT}"
-  if echo "\${LIST_DATA}" | grep -q 'add_merge_request_comment'; then
-    ok "Инструмент add_merge_request_comment: ДОСТУПЕН ✓"
-  else
-    warn "Инструмент add_merge_request_comment не найден в списке инструментов"
-  fi
-elif echo "\${LIST_DATA}" | grep -q '"error"'; then
-  ERR_MSG=\$(echo "\${LIST_DATA}" | grep -o '"message":"[^"]*"' | head -1 || true)
-  warn "tools/list вернул ошибку: \${ERR_MSG:-см. полный ответ выше}"
-else
-  warn "tools/list: неожиданный ответ: \${LIST_DATA:0:200}"
-fi
+    # ── tools/list ────────────────────────────────────────────────────────────
+    conn3 = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
+    _, list_events = sse_post(conn3, "/mcp",
+        {"jsonrpc": "2.0", "id": "list-1", "method": "tools/list", "params": {}},
+        extra_headers=({"Mcp-Session-Id": sid} if sid else None)
+    )
+
+    tools = []
+    for ev in list_events:
+        result = ev.get("result") or {}
+        tools  = result.get("tools", tools)
+
+    if tools:
+        names = [t.get("name","?") for t in tools]
+        print(f"✓ tools/list: OK — инструментов: {len(tools)}")
+        if "add_merge_request_comment" in names:
+            print("✓ add_merge_request_comment: ДОСТУПЕН ✓")
+        else:
+            print(f"⚠ add_merge_request_comment не найден. Список: {names}")
+    else:
+        err_msg = ""
+        for ev in list_events:
+            if "error" in ev:
+                err_msg = ev["error"].get("message","")
+        if err_msg:
+            print(f"⚠ tools/list вернул ошибку: {err_msg}")
+        else:
+            print(f"⚠ tools/list: пустой ответ (session={sid or 'не получен'})")
+            print("  Для ручной проверки:")
+            print(f"  python3 /tmp/mcp-check.py {port}")
+
+except Exception as e:
+    print(f"⚠ MCP handshake: исключение — {e}")
+    print("  Это не обязательно означает неисправность сервера.")
+    print("  Проверьте вручную: docker logs gitlab-mcp | tail -20")
+PYEOF
 
 # ── Проверка 3: --stateful ─────────────────────────────────────────────────────
 log "Проверка 3/3: флаг --stateful в конфигурации контейнера..."
