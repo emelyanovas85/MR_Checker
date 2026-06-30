@@ -47,7 +47,8 @@
 # GET  /health  — health check (возвращает "ok")
 # POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC, отвечает SSE-потоком)
 #
-# ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
+# ВАЖНО: --stateful НЕ используется (stateless-режим).
+#        Open WebUI вызывает tools/list напрямую без сессионного handshake.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
 # ВАЖНО: kopfrechner/gitlab-mr-mcp (ветка main, апрель 2025) содержит два бага:
 #
@@ -344,12 +345,13 @@ RUN node patch-index.mjs && rm patch-index.mjs
 FROM ${SUPERGATEWAY_IMAGE}
 WORKDIR /app
 COPY --from=builder /app /app
+# Stateless режим: --stateful НЕ указан.
+# Open WebUI вызывает tools/list напрямую без сессионного handshake.
 CMD ["--stdio", "node", "index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
      "--streamableHttpPath", "/mcp", \
-     "--healthEndpoint", "/health", \
-     "--stateful"]
+     "--healthEndpoint", "/health"]
 DOCKERFILE
 
 docker build --no-cache -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
@@ -446,7 +448,7 @@ log "Остановка предыдущего контейнера (если е
 eval "\${DOCKER_COMPOSE} down --remove-orphans" || true
 ok "Предыдущий контейнер остановлен"
 
-log "Запуск GitLab MR MCP сервера (supergateway, Streamable HTTP, --stateful)..."
+log "Запуск GitLab MR MCP сервера (supergateway, Streamable HTTP, stateless)..."
 eval "\${DOCKER_COMPOSE} up -d"
 ok "Контейнер запущен"
 
@@ -484,8 +486,8 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake через python3 ──────────────────────────────────
-log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
+# ── Проверка 2: MCP stateless tools/list ─────────────────────────────────────
+log "Проверка 2/3: MCP stateless tools/list..."
 
 python3 - "\${MCP_PORT}" <<'PYEOF'
 import http.client, json, sys
@@ -530,36 +532,8 @@ def sse_post(conn, path, body, extra_headers=None):
 
 try:
     conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
-    sid, events = sse_post(conn, "/mcp", {
-        "jsonrpc": "2.0", "id": "init-1", "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "deploy-check", "version": "1.0"}
-        }
-    })
-    has_server_info = any("serverInfo" in e or "protocolVersion" in e for e in events)
-    if has_server_info:
-        print(f"✓ initialize: OK  session={sid or 'stateless'}")
-    else:
-        print(f"⚠ initialize: serverInfo не найден  session={sid or 'нет'}")
-        print(f"  events: {events}")
-
-    conn2 = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
-    conn2.request("POST", "/mcp",
-        body=json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        headers={
-            "Content-Type": "application/json",
-            "Accept":       "text/event-stream, application/json",
-            **((({"Mcp-Session-Id": sid}) if sid else {}))
-        })
-    conn2.getresponse().read()
-    print("✓ notifications/initialized: отправлено")
-
-    conn3 = http.client.HTTPConnection(host, port, timeout=TIMEOUT)
-    _, list_events = sse_post(conn3, "/mcp",
-        {"jsonrpc": "2.0", "id": "list-1", "method": "tools/list", "params": {}},
-        extra_headers=({"Mcp-Session-Id": sid} if sid else None)
+    _, list_events = sse_post(conn, "/mcp",
+        {"jsonrpc": "2.0", "id": "list-1", "method": "tools/list", "params": {}}
     )
     tools = []
     for ev in list_events:
@@ -577,19 +551,19 @@ try:
         if err_msg:
             print(f"⚠ tools/list вернул ошибку: {err_msg}")
         else:
-            print(f"⚠ tools/list: пустой ответ (session={sid or 'не получен'})")
+            print(f"⚠ tools/list: пустой ответ")
 except Exception as e:
-    print(f"⚠ MCP handshake исключение: {e}")
+    print(f"⚠ MCP tools/list исключение: {e}")
     print("  Проверьте: docker logs gitlab-mcp | tail -20")
 PYEOF
 
-# ── Проверка 3: --stateful ────────────────────────────────────────────────────
-log "Проверка 3/3: флаг --stateful в конфигурации контейнера..."
+# ── Проверка 3: режим stateless ───────────────────────────────────────────────
+log "Проверка 3/3: режим stateless в конфигурации контейнера..."
 CONTAINER_CMD=\$(docker inspect gitlab-mcp --format '{{json .Config.Cmd}}' 2>/dev/null || echo "")
 if echo "\${CONTAINER_CMD}" | grep -q 'stateful'; then
-  ok "--stateful: присутствует в CMD контейнера ✓"
+  warn "--stateful обнаружен в CMD контейнера — пересоберите образ без этого флага"
 else
-  warn "--stateful не найден в CMD. Конфигурация: \${CONTAINER_CMD}"
+  ok "Stateless режим: --stateful отсутствует ✓"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
@@ -603,7 +577,7 @@ echo -e "\${GREEN} Инструменты: list_open_merge_requests, get_merge_r
 echo -e "\${GREEN}              get_merge_request_comments, add_merge_request_comment,\${NC}"
 echo -e "\${GREEN}              add_merge_request_diff_comment, get_merge_request_diff,\${NC}"
 echo -e "\${GREEN}              set_merge_request_title, set_merge_request_description\${NC}"
-echo -e "\${GREEN} Режим      : stateful (сессия сохраняется между запросами)\${NC}"
+echo -e "\${GREEN} Режим      : stateless (сессия не требуется)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 
 if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
