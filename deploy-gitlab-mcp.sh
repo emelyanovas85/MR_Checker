@@ -49,6 +49,15 @@
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
+# ВАЖНО: zod должен быть зафиксирован на версии 3.x.
+#        kopfrechner/gitlab-mr-mcp использует zod.object({}).shape API,
+#        которое было удалено в zod v4. npm ci подтягивает последнюю совместимую
+#        версию из npm-registry, что сейчас даёт zod@4.x и ломает регистрацию
+#        инструментов с ошибкой:
+#          "Tool get_projects expected a Zod schema or ToolAnnotations,
+#           but received an unrecognized object"
+#        Фикс: принудительно перезаписываем зависимость через npm pkg set
+#        до npm ci, чтобы lockfile не мешал.
 # =============================================================================
 
 set -euo pipefail
@@ -182,11 +191,19 @@ rm -f "${SOURCE_ARCHIVE}"
 # ВАЖНО: "node" и "index.js" — строго отдельные элементы CMD.
 # Если написать "node index.js" как один элемент, execvp ищет бинарь
 # с именем «node index.js» (со пробелом) и сразу падает с ENOENT.
+#
+# ВАЖНО: zod принудительно фиксируется на версии 3.x.
+# kopfrechner/gitlab-mr-mcp использует zod.object({}).shape API,
+# которое было удалено в zod v4. npm pkg set перезаписывает зависимость
+# ДО npm ci, чтобы сгенерировать правильный lockfile внутри образа.
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+# Принудительно фиксируем zod@3 — zod v4 сломал .shape API,
+# из-за чего supergateway не может зарегистрировать инструменты.
+RUN npm pkg set dependencies.zod="3.24.0" && \
+    npm install --save --no-fund --no-audit
 COPY . .
 
 FROM ${SUPERGATEWAY_IMAGE}
