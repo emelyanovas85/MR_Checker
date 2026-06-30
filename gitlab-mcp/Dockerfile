@@ -4,12 +4,11 @@
 # Базовый образ: supercorp/supergateway:3.2.0
 # GitLab MCP файлы копируются из mcp/gitlab:latest (локальный образ).
 #
-# ВАЖНО: zod зафиксирован на v3.x
-# @modelcontextprotocol/sdk v1.x несовместим с zod v4:
-#   "Tool get_projects expected a Zod schema or ToolAnnotations,
-#    but received an unrecognized object"
-# zod v4 изменил внутренние идентификаторы схем (_def.typeName),
-# которые SDK использует для проверки — поэтому нужен строго v3.
+# ВАЖНО: SDK 1.29.0 использует zod-compat.js (zod/v3 + zod/v4-mini сабпути),
+# которых нет в zod v3. Поэтому index.js патчится при сборке:
+#   Before: server.tool(name, z.object({...}).describe(desc), handler)
+#   After:  server.tool(name, desc, z.object({...}).shape, handler)
+# Это соответствует isZodRawShapeCompat() в SDK 1.29.0.
 #
 # ВАЖНО: --stateful ОБЯЗАТЕЛЕН
 # Без него supergateway запускает новый процесс на каждый POST.
@@ -33,10 +32,11 @@ COPY --from=mcp/gitlab:latest /app /app
 
 WORKDIR /app
 
-# Фиксируем zod на v3 — несовместимость с @modelcontextprotocol/sdk v1.x
-# zod v4 (^4.x) вызывает краш при старте: "received an unrecognized object"
-RUN npm install zod@">=3.0.0 <4.0.0" --save --no-fund --no-audit 2>/dev/null || \
-    npm install zod@3 --save --no-fund --no-audit
+# Патчим index.js для совместимости с SDK 1.29.0:
+# server.tool(name, schema.describe(desc), handler)
+# → server.tool(name, desc, schema.shape, handler)
+COPY patch-index.mjs /patch-index.mjs
+RUN node /patch-index.mjs /app/index.js
 
 # supergateway запускается как ENTRYPOINT базового образа.
 # --stateful: сохраняет дочерний процесс между запросами одной MCP-сессии.
