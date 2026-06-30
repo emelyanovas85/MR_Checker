@@ -47,8 +47,13 @@
 # GET  /health  — health check (возвращает "ok")
 # POST /mcp     — Streamable HTTP MCP endpoint (JSON-RPC, отвечает SSE-потоком)
 #
-# ВАЖНО: --stateful НЕ используется (stateless-режим).
-#        Open WebUI вызывает tools/list напрямую без сессионного handshake.
+# ВАЖНО: используется --stateful режим supergateway.
+#        В stateless-режиме каждый HTTP-запрос форкает новый stdio-процесс,
+#        поэтому initialize и tools/list попадают в РАЗНЫЕ процессы и node
+#        не отвечает на tools/list без предшествующего initialize.
+#        В stateful-режиме Open WebUI сначала шлёт initialize (получает
+#        Mcp-Session-Id в ответном заголовке), затем tools/list с тем же ID —
+#        оба запроса идут в один и тот же node-процесс.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
 # ВАЖНО: kopfrechner/gitlab-mr-mcp (ветка main, апрель 2025) содержит два бага:
 #
@@ -330,6 +335,7 @@ COPY --from=builder /app /app
 CMD ["--stdio", "node", "index.js", \
      "--port", "${MCP_PORT}", \
      "--outputTransport", "streamableHttp", \
+     "--stateful", \
      "--streamableHttpPath", "/mcp", \
      "--healthEndpoint", "/health"]
 DOCKERFILE
@@ -466,40 +472,61 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP stateless tools/list ─────────────────────────────────────
-# supergateway требует оба MIME-типа в Accept:
-# Accept: text/event-stream, application/json
-log "Проверка 2/3: MCP stateless tools/list..."
-MCP_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 --max-time 10 \
+# ── Проверка 2: MCP stateful — initialize + tools/list ───────────────────────
+# В stateful-режиме supergateway требует:
+#   1. POST /mcp с initialize → получить Mcp-Session-Id в заголовке ответа
+#   2. POST /mcp с Mcp-Session-Id + tools/list → список инструментов
+log "Проверка 2/3: MCP stateful initialize → tools/list..."
+
+INIT_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 --max-time 10 \
+  -D /tmp/mcp-init-headers.txt \
   -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream, application/json' \
-  -d '{"jsonrpc":"2.0","id":"check-1","method":"tools/list","params":{}}' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   http://localhost:\${MCP_PORT}/mcp 2>/dev/null || echo "CURL_FAILED")
 
-if echo "\${MCP_RESPONSE}" | grep -q '"tools"'; then
-  TOOL_COUNT=\$(echo "\${MCP_RESPONSE}" | grep -o '"name"' | wc -l)
-  ok "tools/list: OK — инструментов: \${TOOL_COUNT}"
-  if echo "\${MCP_RESPONSE}" | grep -q '"add_merge_request_comment"'; then
-    ok "add_merge_request_comment: ДОСТУПЕН ✓"
-  else
-    warn "add_merge_request_comment не найден в ответе"
-  fi
-elif echo "\${MCP_RESPONSE}" | grep -q '"error"'; then
-  ERR=\$(echo "\${MCP_RESPONSE}" | grep -o '"message":"[^"]*"' | head -1)
-  warn "tools/list вернул ошибку: \${ERR}"
-elif [[ "\${MCP_RESPONSE}" == "CURL_FAILED" ]]; then
-  warn "tools/list: curl не ответил за 10 сек — проверьте docker logs gitlab-mcp"
+SESSION_ID=\$(grep -i 'mcp-session-id' /tmp/mcp-init-headers.txt 2>/dev/null \
+  | awk '{print \$2}' | tr -d '\r\n' || true)
+rm -f /tmp/mcp-init-headers.txt
+
+if [[ -z "\${SESSION_ID}" ]]; then
+  warn "initialize не вернул Mcp-Session-Id — контейнер ещё не перешёл в stateful-режим?"
+  warn "Ответ initialize: \${INIT_RESPONSE:0:300}"
 else
-  warn "tools/list: неожиданный ответ: \${MCP_RESPONSE:0:200}"
+  ok "initialize OK, Session-Id: \${SESSION_ID}"
+
+  MCP_RESPONSE=\$(curl -s --noproxy localhost,127.0.0.1 --max-time 10 \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H "Mcp-Session-Id: \${SESSION_ID}" \
+    -d '{"jsonrpc":"2.0","id":"check-1","method":"tools/list","params":{}}' \
+    http://localhost:\${MCP_PORT}/mcp 2>/dev/null || echo "CURL_FAILED")
+
+  if echo "\${MCP_RESPONSE}" | grep -q '"tools"'; then
+    TOOL_COUNT=\$(echo "\${MCP_RESPONSE}" | grep -o '"name"' | wc -l)
+    ok "tools/list: OK — инструментов: \${TOOL_COUNT}"
+    if echo "\${MCP_RESPONSE}" | grep -q '"add_merge_request_comment"'; then
+      ok "add_merge_request_comment: ДОСТУПЕН ✓"
+    else
+      warn "add_merge_request_comment не найден в ответе"
+    fi
+  elif echo "\${MCP_RESPONSE}" | grep -q '"error"'; then
+    ERR=\$(echo "\${MCP_RESPONSE}" | grep -o '"message":"[^"]*"' | head -1)
+    warn "tools/list вернул ошибку: \${ERR}"
+  elif [[ "\${MCP_RESPONSE}" == "CURL_FAILED" ]]; then
+    warn "tools/list: curl не ответил за 10 сек — проверьте docker logs gitlab-mcp"
+  else
+    warn "tools/list: неожиданный ответ: \${MCP_RESPONSE:0:200}"
+  fi
 fi
 
-# ── Проверка 3: режим stateless ───────────────────────────────────────────────
-log "Проверка 3/3: режим stateless в конфигурации контейнера..."
+# ── Проверка 3: режим stateful ────────────────────────────────────────────────
+log "Проверка 3/3: режим stateful в конфигурации контейнера..."
 CONTAINER_CMD=\$(docker inspect gitlab-mcp --format '{{json .Config.Cmd}}' 2>/dev/null || echo "")
 if echo "\${CONTAINER_CMD}" | grep -q 'stateful'; then
-  warn "--stateful обнаружен в CMD контейнера — пересоберите образ без этого флага"
+  ok "Stateful режим: --stateful присутствует ✓"
 else
-  ok "Stateless режим: --stateful отсутствует ✓"
+  warn "--stateful отсутствует в CMD контейнера — пересоберите образ"
 fi
 
 SERVER_IP=\$(hostname -I | awk '{print \$1}')
@@ -513,7 +540,7 @@ echo -e "\${GREEN} Инструменты: list_open_merge_requests, get_merge_r
 echo -e "\${GREEN}              get_merge_request_comments, add_merge_request_comment,\${NC}"
 echo -e "\${GREEN}              add_merge_request_diff_comment, get_merge_request_diff,\${NC}"
 echo -e "\${GREEN}              set_merge_request_title, set_merge_request_description\${NC}"
-echo -e "\${GREEN} Режим      : stateless (сессия не требуется)\${NC}"
+echo -e "\${GREEN} Режим      : stateful (Open WebUI шлёт initialize → tools/list с Session-Id)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 
 if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
