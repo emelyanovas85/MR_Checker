@@ -15,7 +15,7 @@
 # --mcp-port Порт MCP-сервера на удалённой машине (по умолчанию: 8083)
 # --gitlab-host Базовый URL GitLab (по умолчанию: http://10.1.5.6)
 # --token GitLab Personal Access Token (или через GITLAB_PERSONAL_ACCESS_TOKEN)
-# --min-access Минимальный уровень доступа для фильтрации проектов (необязатеньно)
+# --min-access Минимальный уровень доступа для фильтрации проектов (необязательно)
 # --project-search Строка поиска для фильтрации проектов (необязательно)
 # --help Показать справку
 #
@@ -49,15 +49,15 @@
 #
 # ВАЖНО: --stateful флаг ОБЯЗАТЕЛЕН.
 # ВАЖНО: "node" и "index.js" — отдельные аргументы CMD (не "node index.js").
-# ВАЖНО: zod должен быть зафиксирован на версии 3.x.
-#        kopfrechner/gitlab-mr-mcp использует zod.object({}).shape API,
-#        которое было удалено в zod v4. npm ci подтягивает последнюю совместимую
-#        версию из npm-registry, что сейчас даёт zod@4.x и ломает регистрацию
-#        инструментов с ошибкой:
+# ВАЖНО: zod должен быть зафиксирован на версии 3.25.x.
+#        @modelcontextprotocol/sdk требует "zod": "^3.25 || ^4.0".
+#        Если в корне стоит zod@3.24.x (< 3.25), npm докачивает
+#        отдельный zod@4.x в node_modules/@modelcontextprotocol/sdk/node_modules/.
+#        Два экземпляра zod — разные объекты, instanceof падает:
 #          "Tool get_projects expected a Zod schema or ToolAnnotations,
 #           but received an unrecognized object"
-#        Фикс: принудительно перезаписываем зависимость через npm pkg set
-#        до npm ci, чтобы lockfile не мешал.
+#        Фикс: фиксируем zod@3.25.x — SDK берёт единственный экземпляр из
+#        корня, вложенной копии zod@4 нет.
 # =============================================================================
 
 set -euo pipefail
@@ -84,7 +84,6 @@ GITLAB_HOST="http://10.1.5.6"
 GITLAB_PERSONAL_ACCESS_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN:-}"
 MIN_ACCESS_LEVEL=""
 PROJECT_SEARCH_TERM=""
-# Папка open-webui-deploy на удалённом хосте (см. emelyanovas85/open-webui-deploy)
 OPENWEBUI_DEPLOY_DIR="~/open-webui-deploy"
 
 SOURCE_ARCHIVE_URL="https://github.com/kopfrechner/gitlab-mr-mcp/archive/refs/heads/main.tar.gz"
@@ -189,20 +188,19 @@ rm -f "${SOURCE_ARCHIVE}"
 # kopfrechner/gitlab-mr-mcp — чистый JavaScript-проект (index.js в корне).
 # Никакого TypeScript и dist/ нет — точка входа всегда /app/index.js.
 # ВАЖНО: "node" и "index.js" — строго отдельные элементы CMD.
-# Если написать "node index.js" как один элемент, execvp ищет бинарь
-# с именем «node index.js» (со пробелом) и сразу падает с ENOENT.
-#
-# ВАЖНО: zod принудительно фиксируется на версии 3.x.
-# kopfrechner/gitlab-mr-mcp использует zod.object({}).shape API,
-# которое было удалено в zod v4. npm pkg set перезаписывает зависимость
-# ДО npm ci, чтобы сгенерировать правильный lockfile внутри образа.
+# ВАЖНО: zod фиксируется на 3.25.x (не 3.24.x!).
+# @modelcontextprotocol/sdk требует "^3.25 || ^4.0" — 3.24.x не удовлетворяет
+# условию ^3.25, поэтому npm докачивает вложенный zod@4.x для SDK.
+# Два экземпляра zod — instanceof падает с ошибкой:
+#   "Tool get_projects expected a Zod schema or ToolAnnotations, but received an unrecognized object"
+# Фикс: zod@3.25.x попадает под ^3.25, SDK берёт единственный экземпляр из корня.
 cat > "${BUILD_CTX}/Dockerfile" <<DOCKERFILE
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-# Принудительно фиксируем zod@3 — zod v4 сломал .shape API,
-# из-за чего supergateway не может зарегистрировать инструменты.
-RUN npm pkg set dependencies.zod="3.24.0" && \
+# zod@3.25.x — минимально необходимая версия для единого экземпляра zod
+# между index.js и @modelcontextprotocol/sdk (dual-package hazard fix).
+RUN npm pkg set dependencies.zod="3.25.3" && \
     npm install --save --no-fund --no-audit
 COPY . .
 
@@ -217,7 +215,7 @@ CMD ["--stdio", "node", "index.js", \
      "--stateful"]
 DOCKERFILE
 
-docker build -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
+docker build --no-cache -t "${BUILT_IMAGE_NAME}" "${BUILD_CTX}" \
   || error "Не удалось собрать образ ${BUILT_IMAGE_NAME}"
 
 rm -rf "${BUILD_CTX}"
@@ -280,7 +278,6 @@ fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 APP_DIR="${APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
-# Папка open-webui-deploy (репо emelyanovas85/open-webui-deploy)
 OPENWEBUI_DIR="${OPENWEBUI_DEPLOY_DIR}"
 
 [[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#\~/}"
@@ -350,7 +347,7 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake ──────────────────────────────────────────────────
+# ── Про─верка 2: MCP handshake ──────────────────────────────────────────────────
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
 INIT_RESPONSE_FILE=\$(mktemp /tmp/mcp-init-XXXXXX)
@@ -451,11 +448,6 @@ echo -e "\${GREEN}              set_merge_request_title, set_merge_request_descr
 echo -e "\${GREEN} Режим      : stateful (сессия сохраняется между запросами)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 
-# ── Обновление Open WebUI через open-webui-init ────────────────────────────────────
-# open-webui-init — одноразовый контейнер (restart: "no") из emelyanovas85/open-webui-deploy.
-# Регистрирует MCP-серверы через API Open WebUI.
-# Безопасно — основной open-webui не трогается.
-
 if [[ ! -f "\${OPENWEBUI_DIR}/docker-compose.yml" ]]; then
   warn "open-webui-deploy не найден в \${OPENWEBUI_DIR}"
   warn "Зарегистрируйте MCP вручную:"
@@ -470,11 +462,8 @@ else
   fi
 
   cd "\${OPENWEBUI_DIR}"
-
-  # Удаляем оставшийся от предыдущего запуска
   docker rm -f open-webui-init 2>/dev/null || true
 
-  # Запуск без пересборки всего стека: --no-deps только init-контейнер
   INIT_EXIT=0
   \${OW_COMPOSE} run --no-deps --rm --name open-webui-init open-webui-init || INIT_EXIT=\$?
 
