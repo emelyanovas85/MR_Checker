@@ -4,11 +4,11 @@
 # Базовый образ: supercorp/supergateway:3.2.0
 # GitLab MCP файлы копируются из mcp/gitlab:latest (локальный образ).
 #
-# ВАЖНО: SDK 1.29.0 использует zod-compat.js (zod/v3 + zod/v4-mini сабпути),
-# которых нет в zod v3. Поэтому index.js патчится при сборке:
-#   Before: server.tool(name, z.object({...}).describe(desc), handler)
-#   After:  server.tool(name, desc, z.object({...}).shape, handler)
-# Это соответствует isZodRawShapeCompat() в SDK 1.29.0.
+# ВАЖНО: @modelcontextprotocol/sdk зафиксирован на 1.10.2
+# Начиная с 1.11.0 SDK сменил API server.tool():
+#   z.object({...}).describe(desc) больше не распознаётся как валидная схема
+#   (isZodRawShapeCompat возвращает false), что вызывает краш при старте.
+# SDK 1.10.2 принимает существующий index.js без изменений.
 #
 # ВАЖНО: --stateful ОБЯЗАТЕЛЕН
 # Без него supergateway запускает новый процесс на каждый POST.
@@ -32,11 +32,9 @@ COPY --from=mcp/gitlab:latest /app /app
 
 WORKDIR /app
 
-# Патчим index.js для совместимости с SDK 1.29.0:
-# server.tool(name, schema.describe(desc), handler)
-# → server.tool(name, desc, schema.shape, handler)
-COPY patch-index.mjs /patch-index.mjs
-RUN node /patch-index.mjs /app/index.js
+# Фиксируем SDK на 1.10.2 — последняя версия совместимая с текущим index.js.
+# 1.11.0+ сменили server.tool() API: z.object().describe() больше не работает.
+RUN npm install @modelcontextprotocol/sdk@1.10.2 --save --no-fund --no-audit
 
 # supergateway запускается как ENTRYPOINT базового образа.
 # --stateful: сохраняет дочерний процесс между запросами одной MCP-сессии.
