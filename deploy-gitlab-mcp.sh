@@ -450,6 +450,9 @@ APP_DIR="${REMOTE_APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 CONTAINER_PORT="${CONTAINER_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
+# Токен нужен для smoke-test MCP handshake — REMOTE_AUTHORIZATION=true требует
+# заголовок Authorization: Bearer <token> в каждом запросе к /mcp
+GITLAB_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN}"
 
 cd "\${APP_DIR}"
 
@@ -518,12 +521,16 @@ else
 fi
 
 # ── Проверка 2: MCP handshake ────────────────────────────────────────────────
+# REMOTE_AUTHORIZATION=true требует заголовок "Authorization: Bearer <token>"
+# во всех запросах к /mcp. Без него сервер возвращает 401 с сообщением
+# "Missing Private-Token, JOB-TOKEN, or Authorization header".
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
 INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
+  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
@@ -545,6 +552,7 @@ eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
+  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   \${NOTIF_HEADERS} \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   --max-time 5 >/dev/null 2>&1 || true
@@ -556,6 +564,7 @@ LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
+  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   \${LIST_HEADERS} \
   -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
