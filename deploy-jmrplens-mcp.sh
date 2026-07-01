@@ -11,7 +11,7 @@
 #   -p, --port        SSH-порт (по умолчанию: 22)
 #   -i, --identity    Путь к SSH-ключу (необязательно)
 #   --app-dir         Каталог на удалённой машине (по умолчанию: ~/jmrplens-mcp)
-#   --mcp-port        Порт MCP-сервера (по умолчанию: 8811)
+#   --mcp-port        Порт MCP-сервера (по умолчанию: 8083)
 #   --gitlab-host     URL GitLab (по умолчанию: http://10.1.5.6)
 #   --gitlab-tier     Тиер GitLab: free|premium|ultimate (по умолчанию: free)
 #   --tool-surface    Режим инструментов: dynamic|meta|individual (по умолчанию: meta)
@@ -59,7 +59,7 @@ REMOTE_USER="svc-local-adm"
 REMOTE_PORT="22"
 SSH_KEY=""
 APP_DIR="~/jmrplens-mcp"
-MCP_PORT="8811"
+MCP_PORT="8083"
 GITLAB_HOST="http://10.1.5.6"
 GITLAB_TIER="free"
 TOOL_SURFACE="meta"

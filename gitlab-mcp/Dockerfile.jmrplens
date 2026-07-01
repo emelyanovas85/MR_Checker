@@ -39,12 +39,12 @@ FROM supercorp/supergateway:latest
 # Копируем бинарник в стандартное место
 COPY --from=mcp-source /usr/local/bin/gitlab-mcp-server /usr/local/bin/jmrplens-server
 
-# supergateway запускаетсъ как ENTRYPOINT базового образа.
+# supergateway запускается как ENTRYPOINT базового образа.
 # CMD содержит аргументы для supergateway + команду дочернего процесса.
 #
 # Параметры переопределяются через переменные среды (см. docker-compose.yml):
 #   GITLAB_URL, GITLAB_TOKEN, GITLAB_TIER, GITLAB_SKIP_TLS_VERIFY, TOOL_SURFACE, MCP_PORT
-CMD ["--port", "8811", \
+CMD ["--port", "8083", \
      "--streamableHttp", \
      "--stdio", \
      "--stateful", \
