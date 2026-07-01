@@ -173,6 +173,17 @@ if [[ -n "${GITLAB_PROJECT_ID}" ]]; then
   log "Дефолтный проект: ${GITLAB_PROJECT_ID} (будет передан как MR_MCP_GITLAB_PROJECT_ID)"
 fi
 
+# ── Раскрываем тильду в APP_DIR ───────────────────────────────────────────────
+# Тильда внутри строковой переменной не раскрывается bash'ом автоматически.
+# Раскрываем один раз здесь, до любых mkdir/scp/heredoc операций.
+if [[ "${APP_DIR}" == "~/"* ]]; then
+  REMOTE_APP_DIR="/home/${REMOTE_USER}/${APP_DIR#~/}"
+elif [[ "${APP_DIR}" == "~" ]]; then
+  REMOTE_APP_DIR="/home/${REMOTE_USER}"
+else
+  REMOTE_APP_DIR="${APP_DIR}"
+fi
+
 if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
   if [[ -n "${LOCAL_TARBALL}" ]]; then
     # Проверяем что файл существует и читаем его размер
@@ -416,24 +427,12 @@ EOF_COMPOSE
   ok "Конфигурация подготовлена (Streamable HTTP на порту ${CONTAINER_PORT} → хост ${MCP_PORT})"
 
   # ── Передача файлов на сервер ─────────────────────────────────────────────────
-  log "Передача конфигурации на ${REMOTE_HOST}..."
-  $SSH_CMD "mkdir -p ${APP_DIR}"
-  $SCP_CMD "${ENV_FILE}"     "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/.env"
-  $SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/docker-compose.yml"
+  log "Передача конфигурации на ${REMOTE_HOST} (${REMOTE_APP_DIR})..."
+  $SSH_CMD "mkdir -p ${REMOTE_APP_DIR}"
+  $SCP_CMD "${ENV_FILE}"     "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_DIR}/.env"
+  $SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_DIR}/docker-compose.yml"
   rm -rf "${WORK_DIR}"
   ok "Конфигурация передана"
-
-  # ── Раскрываем тильду в APP_DIR до передачи в heredoc ────────────────────────
-  # Тильда внутри строковой переменной не раскрывается в [[ ]] на удалённой машине.
-  # Раскрываем путь локально перед подстановкой в heredoc.
-  # Если APP_DIR начинается с ~/ — заменяем ~ на /home/REMOTE_USER
-  if [[ "${APP_DIR}" == "~/"* ]]; then
-    REMOTE_APP_DIR="/home/${REMOTE_USER}/${APP_DIR#~/}"
-  elif [[ "${APP_DIR}" == "~" ]]; then
-    REMOTE_APP_DIR="/home/${REMOTE_USER}"
-  else
-    REMOTE_APP_DIR="${APP_DIR}"
-  fi
 
   # ── Деплой на сервере ─────────────────────────────────────────────────────────
   log "Начало деплоя (zereight/gitlab-mcp, нативный Streamable HTTP) на ${REMOTE_HOST}:${REMOTE_APP_DIR}"
@@ -703,21 +702,12 @@ EOF_COMPOSE
 ok "Локальные .env и docker-compose.yml подготовлены"
 
 # ── Передача файлов на сервер ─────────────────────────────────────────────────
-log "Передача конфигурации на ${REMOTE_HOST}..."
-$SSH_CMD "mkdir -p ${APP_DIR}"
-$SCP_CMD "${ENV_FILE}"     "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/.env"
-$SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/docker-compose.yml"
+log "Передача конфигурации на ${REMOTE_HOST} (${REMOTE_APP_DIR})..."
+$SSH_CMD "mkdir -p ${REMOTE_APP_DIR}"
+$SCP_CMD "${ENV_FILE}"     "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_DIR}/.env"
+$SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_DIR}/docker-compose.yml"
 rm -rf "${WORK_DIR}"
 ok "Конфигурация передана"
-
-# ── Раскрываем тильду в APP_DIR до передачи в heredoc ────────────────────────
-if [[ "${APP_DIR}" == "~/"* ]]; then
-  REMOTE_APP_DIR="/home/${REMOTE_USER}/${APP_DIR#~/}"
-elif [[ "${APP_DIR}" == "~" ]]; then
-  REMOTE_APP_DIR="/home/${REMOTE_USER}"
-else
-  REMOTE_APP_DIR="${APP_DIR}"
-fi
 
 # ── Деплой на сервере ──────────────────────────────────────────────────────────
 log "Начало деплоя GitLab MCP на ${REMOTE_HOST}:${REMOTE_APP_DIR}"
