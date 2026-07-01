@@ -351,7 +351,7 @@ ENTRYPOINT ["node", "build/index.js"]
 DOCKERFILE
 
   log "Сборка образа ${BUILT_SOURCE_IMAGE_NAME} из исходников (npm ci + tsc)..."
-  docker build -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
+  docker build --no-cache -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
     || error "Не удалось собрать образ ${BUILT_SOURCE_IMAGE_NAME}"
   rm -rf "${BUILD_CTX}"
   ok "Образ ${BUILT_SOURCE_IMAGE_NAME} собран локально (ref=${ACTUAL_REF}, все 50+ инструментов, без supergateway)"
@@ -423,8 +423,20 @@ EOF_COMPOSE
   rm -rf "${WORK_DIR}"
   ok "Конфигурация передана"
 
+  # ── Раскрываем тильду в APP_DIR до передачи в heredoc ────────────────────────
+  # Тильда внутри строковой переменной не раскрывается в [[ ]] на удалённой машине.
+  # Раскрываем путь локально перед подстановкой в heredoc.
+  # Если APP_DIR начинается с ~/ — заменяем ~ на /home/REMOTE_USER
+  if [[ "${APP_DIR}" == "~/"* ]]; then
+    REMOTE_APP_DIR="/home/${REMOTE_USER}/${APP_DIR#~/}"
+  elif [[ "${APP_DIR}" == "~" ]]; then
+    REMOTE_APP_DIR="/home/${REMOTE_USER}"
+  else
+    REMOTE_APP_DIR="${APP_DIR}"
+  fi
+
   # ── Деплой на сервере ─────────────────────────────────────────────────────────
-  log "Начало деплоя (zereight/gitlab-mcp, нативный Streamable HTTP) на ${REMOTE_HOST}:${APP_DIR}"
+  log "Начало деплоя (zereight/gitlab-mcp, нативный Streamable HTTP) на ${REMOTE_HOST}:${REMOTE_APP_DIR}"
 
   $SSH_CMD bash <<REMOTE_DEPLOY
 set -euo pipefail
@@ -435,12 +447,11 @@ ok()   { echo -e "\${GREEN}[\$(date '+%H:%M:%S')] ✓\${NC} \$*"; }
 warn() { echo -e "\${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
 fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 
-APP_DIR="${APP_DIR}"
+APP_DIR="${REMOTE_APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 CONTAINER_PORT="${CONTAINER_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
 
-[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#~/}"
 cd "\${APP_DIR}"
 
 [[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
@@ -699,8 +710,17 @@ $SCP_CMD "${COMPOSE_FILE}" "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/docker-comp
 rm -rf "${WORK_DIR}"
 ok "Конфигурация передана"
 
+# ── Раскрываем тильду в APP_DIR до передачи в heredoc ────────────────────────
+if [[ "${APP_DIR}" == "~/"* ]]; then
+  REMOTE_APP_DIR="/home/${REMOTE_USER}/${APP_DIR#~/}"
+elif [[ "${APP_DIR}" == "~" ]]; then
+  REMOTE_APP_DIR="/home/${REMOTE_USER}"
+else
+  REMOTE_APP_DIR="${APP_DIR}"
+fi
+
 # ── Деплой на сервере ──────────────────────────────────────────────────────────
-log "Начало деплоя GitLab MCP на ${REMOTE_HOST}:${APP_DIR}"
+log "Начало деплоя GitLab MCP на ${REMOTE_HOST}:${REMOTE_APP_DIR}"
 
 $SSH_CMD bash <<REMOTE_DEPLOY
 set -euo pipefail
@@ -711,11 +731,10 @@ ok()   { echo -e "\${GREEN}[\$(date '+%H:%M:%S')] ✓\${NC} \$*"; }
 warn() { echo -e "\${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
 fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 
-APP_DIR="${APP_DIR}"
+APP_DIR="${REMOTE_APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
 
-[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#~/}"
 cd "\${APP_DIR}"
 
 [[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
