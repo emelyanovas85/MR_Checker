@@ -1,60 +1,59 @@
-# =============================================================================
-# GitLab MCP Server — Dockerfile
+# Dockerfile для сборки zereight/gitlab-mcp из исходников.
 #
-# Базовый образ: node:20-alpine (сборка собственного index.js)
-# Финальный образ: supercorp/supergateway:3.2.0
+# Почему не используем zereight050/gitlab-mcp:latest с Docker Hub?
+# Этот образ — сторонний форк, который отстаёт от upstream и не содержит
+# тулы для комментариев: create_note, create_merge_request_thread,
+# mr_discussions, resolve_merge_request_thread и др.
 #
-# Отличия от предыдущей версии (zereight/kopfrechner):
-#   - Нет зависимости от локального образа mcp/gitlab:latest
-#   - Собственный index.js — совместим с GitLab 13.11 API v4
-#   - @modelcontextprotocol/sdk зафиксирован на 1.10.2
-#   - process.stdin.resume() держит node живым в --stateful режиме
+# Собираем напрямую из GitHub: github.com/zereight/gitlab-mcp
 #
-# ВАЖНО: --stateful ОБЯЗАТЕЛЕН
-# Без него supergateway запускает новый процесс на каждый POST.
-# MCP требует 3 запроса в одной сессии:
-#   1. POST initialize        → Mcp-Session-Id
-#   2. POST notifications/initialized
-#   3. POST tools/list / tools/call
-# В stateless-режиме шаги 2-3 попадают в новый процесс без инициализации
-# и возвращают пустой список или ошибку "No valid session ID provided".
+# Стадии:
+#   builder  — node:22-alpine, клонирует репозиторий, компилирует TypeScript
+#   release  — чистый node:22-alpine, только production-зависимости + build/
 #
-# ВАЖНО: "node" и "index.js" — ОТДЕЛЬНЫЕ элементы массива CMD
-# supergateway передаёт CMD-аргументы напрямую в execvp().
-# Если написать ["--stdio", "node index.js", ...], execvp ищет бинарь
-# с именем «node index.js» (со пробелом) — и сразу падает с ENOENT.
-# =============================================================================
+# Переменные сборки:
+#   BUILD_REF — ветка/тег/SHA для клонирования (по умолчанию: main)
 
-# --- Stage 1: установка зависимостей ---
-FROM node:20-alpine AS builder
+ARG BUILD_REF=main
+
+# ─── Стадия 1: сборка ────────────────────────────────────────────────────────
+FROM node:22-alpine AS builder
+
+ARG BUILD_REF
+
+# git нужен только на этапе сборки
+RUN apk add --no-cache git
+
+WORKDIR /build
+
+# Клонируем конкретный ref — не тянем всю историю
+RUN git clone --depth 1 --branch "${BUILD_REF}" \
+    https://github.com/zereight/gitlab-mcp.git .
+
+# Устанавливаем ВСЕ зависимости (включая devDependencies — нужны для tsc)
+RUN npm ci --ignore-scripts
+
+# Компилируем TypeScript → build/
+RUN npm run build
+
+# ─── Стадия 2: production-образ ──────────────────────────────────────────────
+FROM node:22-alpine AS release
 
 WORKDIR /app
 
-COPY package.json ./
+# Копируем только результат сборки и манифесты зависимостей
+COPY --from=builder /build/build        ./build
+COPY --from=builder /build/package.json ./package.json
+COPY --from=builder /build/package-lock.json ./package-lock.json
 
-# Устанавливаем зависимости без devDependencies
-RUN npm install --omit=dev --no-fund --no-audit
+# Устанавливаем только production-зависимости
+RUN npm ci --ignore-scripts --omit=dev
 
-COPY index.js ./
+ENV NODE_ENV=production
 
-# --- Stage 2: финальный образ на базе supergateway ---
-FROM supercorp/supergateway:3.2.0
+# Upstream по умолчанию слушает на 3002 в Streamable HTTP режиме
+EXPOSE 3002
 
-# Устанавливаем Node.js в образ supergateway (который на базе Alpine)
-RUN apk add --no-cache nodejs
+USER node
 
-# Копируем приложение из builder-стадии
-COPY --from=builder /app /app
-
-WORKDIR /app
-
-# supergateway запускается как ENTRYPOINT базового образа.
-# --stateful: сохраняет дочерний процесс между запросами одной MCP-сессии.
-# --outputTransport streamableHttp: требуется для Open WebUI v0.9.6+.
-# ВАЖНО: "node" и "index.js" — строго отдельные элементы, не "node index.js".
-CMD ["--stdio", "node", "index.js", \
-     "--port", "8083", \
-     "--outputTransport", "streamableHttp", \
-     "--streamableHttpPath", "/mcp", \
-     "--healthEndpoint", "/health", \
-     "--stateful"]
+ENTRYPOINT ["node", "build/index.js"]

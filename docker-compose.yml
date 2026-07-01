@@ -25,7 +25,6 @@ services:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
 
       # ─── H2 БД ───────────────────────────────────────────────────────
-      # Файлы БД хранятся в /data внутри volume
       H2_DB_PATH: /data/h2/mr-checker
       H2_TCP_PORT: ${H2_TCP_PORT:-9092}
       H2_USER: ${H2_USER:-sa}
@@ -43,17 +42,10 @@ services:
 
       # ─── java-class-context ─────────────────────────────────────────
       CLASS_CONTEXT_URL: ${CLASS_CONTEXT_URL:-http://10.1.5.97:8084}
-      # Важно: вложенные подстановки Docker Compose не поддерживает.
-      # Если CLASS_CONTEXT_GITLAB_TOKEN = GITLAB_TOKEN, задайте явно в .env.
       CLASS_CONTEXT_GITLAB_TOKEN: ${CLASS_CONTEXT_GITLAB_TOKEN}
 
       # ─── webhook-distributor ─────────────────────────────────────────
       WEBHOOK_DISTRIBUTOR_URL: ${WEBHOOK_DISTRIBUTOR_URL:-http://10.1.5.97:8081}
-
-      # ─── Промпты (опционально, если нужно переопределить без пересборки) ──
-      # Пропишите и смонтируйте файл через volumes (см. ниже):
-      #APP_AI_GROUPING_PROMPT_FILE: file:/etc/mr-checker/grouping-prompt.md
-      #APP_AI_REVIEW_PROMPT_FILE:   file:/etc/mr-checker/system-prompt.md
 
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
@@ -62,28 +54,40 @@ services:
       retries: 3
       start_period: 60s
 
-    # Опционально: подключить кастомные промпты без пересборки:
-    # volumes:
-    #   - mr-checker-data:/data
-    #   - ./my-grouping-prompt.md:/etc/mr-checker/grouping-prompt.md:ro
-    #   - ./my-system-prompt.md:/etc/mr-checker/system-prompt.md:ro
-
-  # ─── GitLab MCP Server (zereight/gitlab-mcp) ─────────────────────────────
-  # Предоставляет MCP-инструменты для работы с GitLab через Streamable HTTP.
-  # Open WebUI подключается как Tool Server: URL http://<host>:8083, Type: mcp
+  # ─── GitLab MCP Server (собирается из исходников zereight/gitlab-mcp) ────────
   #
-  # Образ с Docker Hub (ghcr.io заблокирован корпоративным прокси).
-  # Streamable HTTP транспорт встроен — supergateway не нужен.
+  # ПОЧЕМУ НЕ zereight050/gitlab-mcp:latest с Docker Hub?
+  # Тот образ — устаревший сторонний форк без тулов для комментариев:
+  #   create_note, create_merge_request_thread, mr_discussions,
+  #   resolve_merge_request_thread, add_merge_request_thread_note.
+  #
+  # Этот сервис собирается локально из gitlab-mcp/Dockerfile,
+  # который клонирует upstream github.com/zereight/gitlab-mcp и
+  # компилирует TypeScript — все 50+ инструментов включены.
+  #
+  # Первый запуск: docker compose build gitlab-mcp  (требует доступ к GitHub)
+  # Затем:        docker compose up -d
+  #
+  # Open WebUI подключается как Tool Server:
+  #   URL:  http://<host>:8083/mcp
+  #   Type: mcp
   #
   # Эндпоинты:
-  #   GET  /health  — health check
-  #   POST /mcp     — MCP Streamable HTTP (JSON-RPC)
+  #   GET  /health — health check
+  #   POST /mcp    — MCP Streamable HTTP (JSON-RPC 2.0)
   gitlab-mcp:
-    image: zereight050/gitlab-mcp:latest
+    build:
+      context: ./gitlab-mcp
+      dockerfile: Dockerfile
+      args:
+        # Пин на конкретный тег/коммит для воспроизводимых сборок.
+        # Замените на нужный тег: BUILD_REF=v2.1.28
+        BUILD_REF: ${ZEREIGHT_MCP_REF:-main}
+    image: zereight-gitlab-mcp:local
     container_name: gitlab-mcp
     restart: unless-stopped
     ports:
-      - "${MCP_PORT:-8083}:3000"
+      - "${MCP_PORT:-8083}:3002"
     environment:
       # GitLab Personal Access Token (права: api, read_repository)
       GITLAB_PERSONAL_ACCESS_TOKEN: ${GITLAB_TOKEN}
@@ -92,21 +96,22 @@ services:
       # Включить Streamable HTTP транспорт (требуется для Open WebUI v0.9.6+)
       STREAMABLE_HTTP: "true"
       HOST: "0.0.0.0"
-      PORT: "3000"
-      # Опционально: только чтение (без create/update/delete операций)
+      PORT: "3002"
+      # Группы инструментов — включаем все.
+      # Можно ограничить: "merge_requests,notes,issues,repository"
+      TOOL_CATEGORIES: "all"
+      # Опционально: только чтение
       #GITLAB_READ_ONLY_MODE: "true"
-      # Опционально: включить wiki-инструменты
+      # Опционально: wiki-инструменты
       #USE_GITLAB_WIKI: "false"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
 
 # Named volume — данные живут вне контейнера.
-# Путь на хосте управляется Docker Engine (обычно /var/lib/docker/volumes/).
-# Для конкретного bind mount замените на: driver: local + device: /host/path
 volumes:
   mr-checker-data:
     name: mr-checker-data
