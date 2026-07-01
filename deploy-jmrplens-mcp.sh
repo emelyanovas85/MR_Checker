@@ -15,6 +15,7 @@
 #   --gitlab-host     URL GitLab (по умолчанию: http://10.1.5.6)
 #   --gitlab-tier     Тиер GitLab: free|premium|ultimate (по умолчанию: free)
 #   --tool-surface    Режим инструментов: dynamic|meta|individual (по умолчанию: meta)
+#   --image           Имя итогового Docker-образа (по умолчанию: mcp/jmrplens-gitlab:latest)
 #   --token           GitLab PAT (или через GITLAB_TOKEN=...)
 #                     Если не указан — запрашивается интерактивно
 #   --openwebui-dir   Каталог open-webui-deploy (по умолчанию: ~/open-webui-deploy)
@@ -30,14 +31,12 @@
 #   Изображение: ghcr.io/jmrplens/gitlab-mcp-server:latest
 #   866 actions для GitLab CE/Free. Протестирован на GitLab 13.11.1.
 #
-# Архитектура:
-#   jmrplens/gitlab-mcp-server (Go-бинарник, stdio)
-#   ↓ stderr/stdout
-#   supergateway:latest (трансляция stdio ↔ Streamable HTTP)
-#   ↓ port MCP_PORT
-#   Open WebUI v0.9.6+ подключается к http://<host>:MCP_PORT/mcp
+# Архитектура сборки:
+#   1. Локально: docker pull ghcr.io/jmrplens + supercorp/supergateway
+#   2. Локально: docker build gitlab-mcp/Dockerfile.jmrplens → mcp/jmrplens-gitlab:latest
+#   3. docker save | ssh docker load → образ передаётся на удалённую
 #
-# WARN: GITLAB_TOKEN никогда не сохраняется в файл на диске.
+# WARN: GITLAB_TOKEN никогда не сохраняется на диске.
 #      Передаётся только в .env на удалённой машине через SSH.
 # NOTE: WARN «404 on PAT scopes» — ожидаемо для 13.11 (/personal_access_tokens/self
 #       появился в 14.10). Все инструменты регистрируются.
@@ -65,10 +64,15 @@ GITLAB_HOST="http://10.1.5.6"
 GITLAB_TIER="free"
 TOOL_SURFACE="meta"
 GITLAB_TOKEN="${GITLAB_TOKEN:-}"
+BUILT_IMAGE_NAME="mcp/jmrplens-gitlab:latest"
 OPENWEBUI_DEPLOY_DIR="~/open-webui-deploy"
 
-MCP_IMAGE="ghcr.io/jmrplens/gitlab-mcp-server:latest"
+JMRPLENS_IMAGE="ghcr.io/jmrplens/gitlab-mcp-server:latest"
 SUPERGATEWAY_IMAGE="supercorp/supergateway:latest"
+
+# Путь к Dockerfile относительно скрипта
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCKERFILE="${SCRIPT_DIR}/gitlab-mcp/Dockerfile.jmrplens"
 
 usage() {
   grep '^#' "$0" | grep -v '#!/' | sed 's/^# \{0,2\}//'
@@ -87,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --gitlab-host)       GITLAB_HOST="$2";       shift 2 ;;
     --gitlab-tier)       GITLAB_TIER="$2";       shift 2 ;;
     --tool-surface)      TOOL_SURFACE="$2";      shift 2 ;;
+    --image)             BUILT_IMAGE_NAME="$2";  shift 2 ;;
     --token)             GITLAB_TOKEN="$2";      shift 2 ;;
     --openwebui-dir)     OPENWEBUI_DEPLOY_DIR="$2"; shift 2 ;;
     --help)              usage ;;
@@ -94,15 +99,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Токен запрашивается интерактивно, если не передан ───────────────────────────
+# ── Токен: запрашивается интерактивно, если не передан ───────────────────────────
 if [[ -z "${GITLAB_TOKEN}" ]]; then
-  echo -e "${YELLOW}\u0412ведите GitLab Personal Access Token:${NC} "
+  echo -e "${YELLOW}Введите GitLab Personal Access Token:${NC} "
   read -r -s GITLAB_TOKEN
   echo ""
   [[ -z "${GITLAB_TOKEN}" ]] && error "Токен не может быть пустым"
 fi
 
 [[ ! "${MCP_PORT}" =~ ^[0-9]+$ ]] && error "Некорректный порт: ${MCP_PORT}"
+[[ ! -f "${DOCKERFILE}" ]] && error "Не найден Dockerfile: ${DOCKERFILE}"
+
+# ── Проверка локальных зависимостей ──────────────────────────────────────────────────
+log "Проверка локальных зависимостей..."
+command -v docker >/dev/null 2>&1 || error "Локально не найден docker"
+ok "Локальные зависимости в порядке"
 
 # ── SSH ControlMaster ─────────────────────────────────────────────────────────────────
 SSH_CTRL_DIR="$(mktemp -d /tmp/ssh-ctrl-XXXXXX)"
@@ -121,7 +132,7 @@ SSH_BASE_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 \\
 SSH_CMD="ssh ${SSH_BASE_OPTS} -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST}"
 SCP_CMD="scp ${SSH_BASE_OPTS} -P ${REMOTE_PORT}"
 
-# ── Проверка подключения ─────────────────────────────────────────────────────────
+# ── Проверка SSH-подключения ───────────────────────────────────────────────────────
 log "Подключение к ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}..."
 $SSH_CMD 'echo ok' > /dev/null 2>&1 || error "Не удалось подключиться к ${REMOTE_HOST}"
 ok "Соединение установлено"
@@ -148,19 +159,26 @@ DOCKER_COMPOSE=$($SSH_CMD \
   'if docker compose version >/dev/null 2>&1; then echo "docker compose"; else echo "docker-compose"; fi')
 log "Используем compose: ${DOCKER_COMPOSE}"
 
-# ── Пулл образов на удалённой машине ───────────────────────────────────────────────
-log "Пулл образов на ${REMOTE_HOST}..."
-$SSH_CMD bash <<REMOTE_PULL
-set -e
-# supergateway скачивается с Docker Hub
-docker pull ${SUPERGATEWAY_IMAGE} \
-  || { echo "ERROR: Не удалось скачать ${SUPERGATEWAY_IMAGE}"; exit 1; }
-# jmrplens скачивается с GHCR
-docker pull ${MCP_IMAGE} \
-  || { echo "ERROR: Не удалось скачать ${MCP_IMAGE}"; exit 1; }
-echo "PULL_OK"
-REMOTE_PULL
-ok "Образы доступны"
+# ── Локальный pull базовых образов ───────────────────────────────────────────────────────
+log "Локальный pull базовых образов для сборки..."
+docker pull "${JMRPLENS_IMAGE}"    || error "Не удалось скачать ${JMRPLENS_IMAGE}"
+docker pull "${SUPERGATEWAY_IMAGE}" || error "Не удалось скачать ${SUPERGATEWAY_IMAGE}"
+ok "Базовые образы готовы"
+
+# ── Локальная сборка итогового образа ──────────────────────────────────────────────────
+log "Локальная сборка ${BUILT_IMAGE_NAME}..."
+docker build --no-cache \
+  -t "${BUILT_IMAGE_NAME}" \
+  -f "${DOCKERFILE}" \
+  "${SCRIPT_DIR}/gitlab-mcp" \
+  || error "Не удалось собрать образ ${BUILT_IMAGE_NAME}"
+ok "Образ ${BUILT_IMAGE_NAME} собран"
+
+# ── Передача образа на удалённую машину ───────────────────────────────────────────────
+log "Передача образа ${BUILT_IMAGE_NAME} на ${REMOTE_HOST}..."
+docker save "${BUILT_IMAGE_NAME}" \
+  | ssh ${SSH_BASE_OPTS} -p "${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_HOST}" 'docker load'
+ok "Образ загружен на ${REMOTE_HOST}"
 
 # ── Генерация docker-compose.yml и .env ───────────────────────────────────────────────
 WORK_DIR="$(mktemp -d /tmp/jmrplens-deploy-XXXXXX)"
@@ -169,7 +187,7 @@ COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
 
 log "Генерация файлов конфигурации..."
 
-# .env — GITLAB_TOKEN передаётся только сюда, на диске не сохраняется
+# .env — GITLAB_TOKEN передаётся через SSH, на диске не сохраняется
 cat > "${ENV_FILE}" <<EOF_ENV
 GITLAB_URL=${GITLAB_HOST}
 GITLAB_TOKEN=${GITLAB_TOKEN}
@@ -177,36 +195,26 @@ GITLAB_TIER=${GITLAB_TIER}
 GITLAB_SKIP_TLS_VERIFY=true
 TOOL_SURFACE=${TOOL_SURFACE}
 MCP_PORT=${MCP_PORT}
+BUILT_IMAGE_NAME=${BUILT_IMAGE_NAME}
 EOF_ENV
 
 cat > "${COMPOSE_FILE}" <<'EOF_COMPOSE'
-# docker-compose.yml для jmrplens/gitlab-mcp-server через supergateway
+# docker-compose.yml для jmrplens/gitlab-mcp-server
 # Сгенерирован скриптом деплоя — не редактируйте вручную.
 
 services:
   jmrplens-mcp:
-    image: supercorp/supergateway:latest
+    image: ${BUILT_IMAGE_NAME}
     container_name: jmrplens-mcp
     restart: unless-stopped
     ports:
       - "${MCP_PORT}:${MCP_PORT}"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      SUPERGATEWAY_PORT: "${MCP_PORT}"
-    command: >
-      --port ${MCP_PORT}
-      --streamableHttp
-      --stdio
-      "docker run -i --rm
-        --network host
-        -e GITLAB_URL=${GITLAB_URL}
-        -e GITLAB_TOKEN=${GITLAB_TOKEN}
-        -e GITLAB_TIER=${GITLAB_TIER}
-        -e GITLAB_SKIP_TLS_VERIFY=${GITLAB_SKIP_TLS_VERIFY}
-        -e TOOL_SURFACE=${TOOL_SURFACE}
-        ghcr.io/jmrplens/gitlab-mcp-server:latest
-        --http=false"
+      GITLAB_URL: ${GITLAB_URL}
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+      GITLAB_TIER: ${GITLAB_TIER}
+      GITLAB_SKIP_TLS_VERIFY: ${GITLAB_SKIP_TLS_VERIFY}
+      TOOL_SURFACE: ${TOOL_SURFACE}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:${MCP_PORT}/health"]
       interval: 15s
@@ -346,13 +354,13 @@ else
   fi
 fi
 
-# ── Проверка 3: наличие GITLAB_TOKEN в конфиге ────────────────────────────────────────
-log "Проверка 3/3: конфигурация контейнера..."
-CONTAINER_ENV=\$(docker inspect jmrplens-mcp --format '{{json .Config.Env}}' 2>/dev/null || echo "")
-if echo "\${CONTAINER_ENV}" | grep -q 'GITLAB_URL'; then
-  ok "GITLAB_URL присутствует в среде контейнера \u2713"
+# ── Проверка 3: изображение контейнера ────────────────────────────────────────────
+log "Проверка 3/3: изображение контейнера..."
+ACTUAL_IMAGE=\$(docker inspect jmrplens-mcp --format '{{.Config.Image}}' 2>/dev/null || echo "")
+if [[ "\${ACTUAL_IMAGE}" == *"jmrplens"* ]]; then
+  ok "Image: \${ACTUAL_IMAGE} \u2713"
 else
-  warn "GITLAB_URL не найден в конфигурации контейнера"
+  warn "Image: \${ACTUAL_IMAGE}"
 fi
 
 # ── Итог ───────────────────────────────────────────────────────────────────────────────
@@ -363,9 +371,9 @@ echo ""
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 echo -e "\${GREEN} MCP URL    : http://\${SERVER_IP}:\${MCP_PORT}/mcp\${NC}"
 echo -e "\${GREEN} Health URL : http://\${SERVER_IP}:\${MCP_PORT}/health\${NC}"
-echo -e "\${GREEN} Image      : jmrplens/gitlab-mcp-server + supergateway\${NC}"
-echo -e "\${GREEN} TOOL_SURFACE: ${TOOL_SURFACE} (meta = 30 домен-групп)\${NC}"
-echo -e "\${GREEN} GitLab     : ${GITLAB_HOST} (v13.11.1 — 866 actions зарегистрировано)\${NC}"
+echo -e "\${GREEN} Image      : ${BUILT_IMAGE_NAME} (jmrplens Go + supergateway)\${NC}"
+echo -e "\${GREEN} TOOL_SURFACE: ${TOOL_SURFACE}\${NC}"
+echo -e "\${GREEN} GitLab     : ${GITLAB_HOST} (v13.11.1)\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 
 # ── Open WebUI ───────────────────────────────────────────────────────────────────────

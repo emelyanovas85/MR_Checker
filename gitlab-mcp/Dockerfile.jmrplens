@@ -1,0 +1,53 @@
+# =============================================================================
+# jmrplens/gitlab-mcp-server — Dockerfile
+#
+# Базовый образ: supercorp/supergateway:latest
+# Go-бинарник gitlab-mcp-server копируется из ghcr.io/jmrplens/gitlab-mcp-server:latest.
+#
+# Архитектура:
+#   supergateway (транспорт stdio ↔ Streamable HTTP, порт MCP_PORT)
+#     └─ jmrplens-server (запускается как подпроцесс через stdio)
+#
+# Преимущества перед kopfrechner:
+#   - Go статический бинарник — нет Node.js/npm/zod/SDK-багов
+#   - 866 actions для GitLab CE/Free
+#   - Протестирован на GitLab 13.11.1
+#   - TOOL_SURFACE=meta: 30 домен-групп, вмещается в контекст Open WebUI
+#
+# WARN: При TOOL_SURFACE=individual — 866 tools, может переполнить контекст.
+# NOTE: WARN «404 on PAT scopes» — ожидаемо для GitLab 13.11
+#       (/personal_access_tokens/self появился в 14.10).
+#       Все инструменты всё равно регистрируются.
+#
+# ВАЖНО: --stateful ОБЯЗАТЕЛЕН
+# Без него supergateway создаёт новый процесс на каждый POST.
+# MCP-сессия требует минимум 3 запроса в одном процессе:
+#   1. POST initialize        → Mcp-Session-Id
+#   2. POST notifications/initialized
+#   3. POST tools/list / tools/call
+#
+# ВАЖНО: "jmrplens-server" и дальнейшие флаги — ОТДЕЛЬНЫЕ элементы CMD
+# supergateway передаёт аргументы прямо в execvp().
+# =============================================================================
+
+# Шаг 1: копируем Go-бинарник из образа jmrplens
+FROM ghcr.io/jmrplens/gitlab-mcp-server:latest AS mcp-source
+
+# Шаг 2: итоговый образ на базе supergateway
+FROM supercorp/supergateway:latest
+
+# Копируем бинарник в стандартное место
+COPY --from=mcp-source /usr/local/bin/gitlab-mcp-server /usr/local/bin/jmrplens-server
+
+# supergateway запускаетсъ как ENTRYPOINT базового образа.
+# CMD содержит аргументы для supergateway + команду дочернего процесса.
+#
+# Параметры переопределяются через переменные среды (см. docker-compose.yml):
+#   GITLAB_URL, GITLAB_TOKEN, GITLAB_TIER, GITLAB_SKIP_TLS_VERIFY, TOOL_SURFACE, MCP_PORT
+CMD ["--port", "8811", \
+     "--streamableHttp", \
+     "--stdio", \
+     "--stateful", \
+     "--healthEndpoint", "/health", \
+     "jmrplens-server", \
+     "--http=false"]
