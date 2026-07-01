@@ -26,10 +26,19 @@
 # --build-from-source  Собрать образ из исходников github.com/zereight/gitlab-mcp.
 #                      Не требует docker pull mcp/gitlab и supercorp/supergateway.
 #                      Нативный Streamable HTTP — supergateway не нужен.
-#                      Требует доступ к github.com с ЛОКАЛЬНОЙ машины (только на этапе сборки).
+#                      Включает все 50+ инструментов, в том числе для комментариев к MR.
+#                      Требует доступ к github.com с ЛОКАЛЬНОЙ машины (только на этапе сборки)
+#                      ИЛИ укажите --local-tarball для работы без интернета.
 #                      Удалённый хост по-прежнему без интернета — образ передаётся через SSH.
+# --local-tarball   Путь к локальному .tar.gz архиву исходников zereight/gitlab-mcp.
+#                   Используйте вместо --mcp-ref когда github.com недоступен.
+#                   Скачайте архив вручную:
+#                     https://github.com/zereight/gitlab-mcp/archive/refs/heads/main.tar.gz
+#                   Пример: --local-tarball ~/Downloads/gitlab-mcp-main.tar.gz
+#                   Автоматически включает --build-from-source.
 # --mcp-ref         Ветка/тег/SHA репозитория zereight/gitlab-mcp для --build-from-source
 #                   (по умолчанию: main). Пример: --mcp-ref v2.1.28
+#                   Игнорируется если указан --local-tarball.
 # --help            Показать справку
 #
 # Примеры:
@@ -41,12 +50,14 @@
 # ./deploy-gitlab-mcp.sh --read-only --use-wiki --token glpat-xxx
 # ./deploy-gitlab-mcp.sh --build-from-source --token glpat-xxx
 # ./deploy-gitlab-mcp.sh --build-from-source --mcp-ref v2.1.28 --token glpat-xxx
+# ./deploy-gitlab-mcp.sh --local-tarball ~/Downloads/gitlab-mcp-main.tar.gz --token glpat-xxx
 #
 # ─── РЕЖИМЫ СБОРКИ ОБРАЗА ──────────────────────────────────────────────────
 #
 # Режим 1 (по умолчанию): сборка из исходников zereight/gitlab-mcp
 # ──────────────────────────────────────────────────────────────────────────
-# Клонирует github.com/zereight/gitlab-mcp на ЛОКАЛЬНОЙ машине,
+# Клонирует github.com/zereight/gitlab-mcp на ЛОКАЛЬНОЙ машине (или использует
+# локальный .tar.gz архив через --local-tarball),
 # компилирует TypeScript (npm ci + tsc), строит production-образ.
 # Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
 # нативно через env STREAMABLE_HTTP=true.
@@ -112,6 +123,7 @@ NO_PULL=false
 # По умолчанию включён режим сборки из исходников zereight/gitlab-mcp
 BUILD_FROM_SOURCE=true
 MCP_REF="main"
+LOCAL_TARBALL=""
 # Имя локального образа при сборке из исходников
 BUILT_SOURCE_IMAGE_NAME="zereight-gitlab-mcp:local"
 # Внутренний порт контейнера (upstream default для zereight/gitlab-mcp)
@@ -140,6 +152,7 @@ while [[ $# -gt 0 ]]; do
     --no-pull)              NO_PULL=true;                           shift   ;;
     --build-from-source)    BUILD_FROM_SOURCE=true;                 shift   ;;
     --mcp-ref)              MCP_REF="$2";                           shift 2 ;;
+    --local-tarball)        LOCAL_TARBALL="$2"; BUILD_FROM_SOURCE=true; shift 2 ;;
     --help)                 usage ;;
     *) error "Неизвестный аргумент: $1. Используйте --help для справки." ;;
   esac
@@ -160,9 +173,16 @@ if [[ -n "${GITLAB_PROJECT_ID}" ]]; then
 fi
 
 if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
-  log "Режим: --build-from-source (zereight/gitlab-mcp@${MCP_REF}, без supergateway)"
-  # Проверяем наличие git локально
-  command -v git >/dev/null 2>&1 || error "Режим --build-from-source требует git на локальной машине"
+  if [[ -n "${LOCAL_TARBALL}" ]]; then
+    # Проверяем что файл существует и читаем его размер
+    [[ -f "${LOCAL_TARBALL}" ]] || error "Файл не найден: ${LOCAL_TARBALL}"
+    TARBALL_SIZE=$(du -sh "${LOCAL_TARBALL}" 2>/dev/null | cut -f1)
+    log "Режим: --local-tarball (${LOCAL_TARBALL}, ${TARBALL_SIZE}, без github.com и git)"
+  else
+    log "Режим: --build-from-source (zereight/gitlab-mcp@${MCP_REF}, без supergateway)"
+    # Проверяем наличие git локально только когда нет tarball
+    command -v git >/dev/null 2>&1 || error "Режим --build-from-source требует git на локальной машине (или используйте --local-tarball)"
+  fi
 else
   log "Режим: mcp/gitlab + supergateway:3.2.0 (--stateful)"
 fi
@@ -222,15 +242,31 @@ log "Используем compose: ${DOCKER_COMPOSE}"
 # =============================================================================
 if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
 
-  # ── Клонирование и сборка локально ──────────────────────────────────────────
   BUILD_CTX="$(mktemp -d /tmp/zereight-mcp-build-XXXXXX)"
   trap 'cleanup; rm -rf "${BUILD_CTX}"' EXIT
 
-  log "Клонирование github.com/zereight/gitlab-mcp@${MCP_REF} локально..."
-  git clone --depth 1 --branch "${MCP_REF}" \
-    https://github.com/zereight/gitlab-mcp.git "${BUILD_CTX}/src" \
-    || error "Не удалось клонировать zereight/gitlab-mcp@${MCP_REF}"
-  ok "Репозиторий клонирован (ref=${MCP_REF})"
+  # ── Получение исходников ─────────────────────────────────────────────────────
+  if [[ -n "${LOCAL_TARBALL}" ]]; then
+    # ── Режим: локальный архив (без github.com) ──────────────────────────────
+    log "Распаковка локального архива ${LOCAL_TARBALL}..."
+    mkdir -p "${BUILD_CTX}/src"
+    tar -xzf "${LOCAL_TARBALL}" -C "${BUILD_CTX}/src" --strip-components=1 \
+      || error "Не удалось распаковать архив ${LOCAL_TARBALL}"
+    # Проверяем что это правильный репозиторий
+    if [[ ! -f "${BUILD_CTX}/src/package.json" ]]; then
+      error "Архив не содержит package.json — убедитесь что это исходники zereight/gitlab-mcp"
+    fi
+    ACTUAL_REF="local-tarball:$(basename "${LOCAL_TARBALL}")"
+    ok "Исходники распакованы из локального архива ($(ls "${BUILD_CTX}/src" | wc -l) файлов)"
+  else
+    # ── Режим: клонирование с github.com ────────────────────────────────────
+    log "Клонирование github.com/zereight/gitlab-mcp@${MCP_REF} локально..."
+    git clone --depth 1 --branch "${MCP_REF}" \
+      https://github.com/zereight/gitlab-mcp.git "${BUILD_CTX}/src" \
+      || error "Не удалось клонировать zereight/gitlab-mcp@${MCP_REF}. Если github.com недоступен — используйте --local-tarball"
+    ACTUAL_REF="${MCP_REF}"
+    ok "Репозиторий клонирован (ref=${MCP_REF})"
+  fi
 
   # Пишем Dockerfile прямо в BUILD_CTX (не в src/, чтобы не конфликтовать)
   cat > "${BUILD_CTX}/Dockerfile" <<'DOCKERFILE'
@@ -277,7 +313,7 @@ DOCKERFILE
   docker build -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
     || error "Не удалось собрать образ ${BUILT_SOURCE_IMAGE_NAME}"
   rm -rf "${BUILD_CTX}"
-  ok "Образ ${BUILT_SOURCE_IMAGE_NAME} собран локально (все 50+ инструментов, без supergateway)"
+  ok "Образ ${BUILT_SOURCE_IMAGE_NAME} собран локально (ref=${ACTUAL_REF}, все 50+ инструментов, без supergateway)"
 
   # ── Передача образа на сервер ────────────────────────────────────────────────
   log "Передача образа ${BUILT_SOURCE_IMAGE_NAME} на ${REMOTE_HOST} (docker save | ssh docker load)..."
