@@ -27,11 +27,11 @@
 #                      Не требует docker pull mcp/gitlab и supercorp/supergateway.
 #                      Нативный Streamable HTTP — supergateway не нужен.
 #                      Включает все 50+ инструментов, в том числе для комментариев к MR.
-#                      Требует доступ к github.com с ЛОКАЛЬНОЙ машины (только на этапе сборки)
-#                      ИЛИ укажите --local-tarball для работы без интернета.
+#                      Скрипт автоматически скачивает исходники через curl (tar.gz),
+#                      git не требуется и учётные данные GitHub не нужны.
 #                      Удалённый хост по-прежнему без интернета — образ передаётся через SSH.
 # --local-tarball   Путь к локальному .tar.gz архиву исходников zereight/gitlab-mcp.
-#                   Используйте вместо --mcp-ref когда github.com недоступен.
+#                   Используйте если хотите явно указать уже скачанный архив.
 #                   Скачайте архив вручную:
 #                     https://github.com/zereight/gitlab-mcp/archive/refs/heads/main.tar.gz
 #                   Пример: --local-tarball ~/Downloads/gitlab-mcp-main.tar.gz
@@ -56,9 +56,10 @@
 #
 # Режим 1 (по умолчанию): сборка из исходников zereight/gitlab-mcp
 # ──────────────────────────────────────────────────────────────────────────
-# Клонирует github.com/zereight/gitlab-mcp на ЛОКАЛЬНОЙ машине (или использует
-# локальный .tar.gz архив через --local-tarball),
-# компилирует TypeScript (npm ci + tsc), строит production-образ.
+# Скачивает архив исходников через curl (tar.gz) с github.com — git и
+# учётные данные GitHub не нужны. Если указан --local-tarball, использует
+# локальный файл вместо скачивания. Компилирует TypeScript (npm ci + tsc),
+# строит production-образ.
 # Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
 # нативно через env STREAMABLE_HTTP=true.
 # Включает все 50+ инструментов, в том числе для комментариев к MR:
@@ -180,8 +181,7 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
     log "Режим: --local-tarball (${LOCAL_TARBALL}, ${TARBALL_SIZE}, без github.com и git)"
   else
     log "Режим: --build-from-source (zereight/gitlab-mcp@${MCP_REF}, без supergateway)"
-    # Проверяем наличие git локально только когда нет tarball
-    command -v git >/dev/null 2>&1 || error "Режим --build-from-source требует git на локальной машине (или используйте --local-tarball)"
+    log "Исходники будут скачаны через curl (tar.gz) — git и учётные данные GitHub не нужны"
   fi
 else
   log "Режим: mcp/gitlab + supergateway:3.2.0 (--stateful)"
@@ -247,25 +247,66 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
 
   # ── Получение исходников ─────────────────────────────────────────────────────
   if [[ -n "${LOCAL_TARBALL}" ]]; then
-    # ── Режим: локальный архив (без github.com) ──────────────────────────────
+    # ── Режим: явно указанный локальный архив ───────────────────────────────
     log "Распаковка локального архива ${LOCAL_TARBALL}..."
     mkdir -p "${BUILD_CTX}/src"
     tar -xzf "${LOCAL_TARBALL}" -C "${BUILD_CTX}/src" --strip-components=1 \
       || error "Не удалось распаковать архив ${LOCAL_TARBALL}"
-    # Проверяем что это правильный репозиторий
     if [[ ! -f "${BUILD_CTX}/src/package.json" ]]; then
       error "Архив не содержит package.json — убедитесь что это исходники zereight/gitlab-mcp"
     fi
     ACTUAL_REF="local-tarball:$(basename "${LOCAL_TARBALL}")"
     ok "Исходники распакованы из локального архива ($(ls "${BUILD_CTX}/src" | wc -l) файлов)"
   else
-    # ── Режим: клонирование с github.com ────────────────────────────────────
-    log "Клонирование github.com/zereight/gitlab-mcp@${MCP_REF} локально..."
-    git clone --depth 1 --branch "${MCP_REF}" \
-      https://github.com/zereight/gitlab-mcp.git "${BUILD_CTX}/src" \
-      || error "Не удалось клонировать zereight/gitlab-mcp@${MCP_REF}. Если github.com недоступен — используйте --local-tarball"
+    # ── Режим: скачивание архива через curl (без git, без учётных данных) ───
+    # GitHub отдаёт публичный tar.gz архив без авторизации.
+    # Для веток:  https://github.com/OWNER/REPO/archive/refs/heads/BRANCH.tar.gz
+    # Для тегов:  https://github.com/OWNER/REPO/archive/refs/tags/TAG.tar.gz
+    # Для коммитов (первые 40 символов SHA): https://github.com/OWNER/REPO/archive/SHA.tar.gz
+    MCP_TARBALL_URL="https://github.com/zereight/gitlab-mcp/archive/refs/heads/${MCP_REF}.tar.gz"
+    # Если MCP_REF похож на тег (начинается с 'v' и содержит точку) — используем /refs/tags/
+    if [[ "${MCP_REF}" =~ ^v[0-9]+\. ]]; then
+      MCP_TARBALL_URL="https://github.com/zereight/gitlab-mcp/archive/refs/tags/${MCP_REF}.tar.gz"
+    fi
+    # Если MCP_REF — это полный SHA (40 hex-символов) — используем прямой путь
+    if [[ "${MCP_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+      MCP_TARBALL_URL="https://github.com/zereight/gitlab-mcp/archive/${MCP_REF}.tar.gz"
+    fi
+
+    log "Скачивание исходников zereight/gitlab-mcp@${MCP_REF} через curl..."
+    log "URL: ${MCP_TARBALL_URL}"
+
+    TARBALL_DEST="${BUILD_CTX}/gitlab-mcp.tar.gz"
+    mkdir -p "${BUILD_CTX}/src"
+
+    # curl: -L следует редиректам (GitHub делает редирект на codeload.github.com)
+    #        --fail завершается с ошибкой при HTTP 4xx/5xx
+    #        --retry 3 повторяет при временных сбоях сети
+    if ! curl -L --fail --retry 3 --retry-delay 2 \
+         -o "${TARBALL_DEST}" \
+         --connect-timeout 30 \
+         --max-time 120 \
+         --progress-bar \
+         "${MCP_TARBALL_URL}"; then
+      error "Не удалось скачать исходники с ${MCP_TARBALL_URL}.
+Проверьте доступность github.com с локальной машины.
+Или скачайте архив вручную и укажите: --local-tarball /path/to/gitlab-mcp.tar.gz"
+    fi
+
+    TARBALL_SIZE=$(du -sh "${TARBALL_DEST}" 2>/dev/null | cut -f1)
+    log "Архив скачан (${TARBALL_SIZE}), распаковка..."
+
+    tar -xzf "${TARBALL_DEST}" -C "${BUILD_CTX}/src" --strip-components=1 \
+      || error "Не удалось распаковать скачанный архив"
+
+    rm -f "${TARBALL_DEST}"
+
+    if [[ ! -f "${BUILD_CTX}/src/package.json" ]]; then
+      error "Архив не содержит package.json — возможно неверный MCP_REF: ${MCP_REF}"
+    fi
+
     ACTUAL_REF="${MCP_REF}"
-    ok "Репозиторий клонирован (ref=${MCP_REF})"
+    ok "Исходники zereight/gitlab-mcp@${MCP_REF} скачаны и распакованы ($(ls "${BUILD_CTX}/src" | wc -l) файлов)"
   fi
 
   # Пишем Dockerfile прямо в BUILD_CTX (не в src/, чтобы не конфликтовать)
