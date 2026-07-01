@@ -25,7 +25,6 @@ services:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
 
       # ─── H2 БД ───────────────────────────────────────────────────────
-      # Файлы БД хранятся в /data внутри volume
       H2_DB_PATH: /data/h2/mr-checker
       H2_TCP_PORT: ${H2_TCP_PORT:-9092}
       H2_USER: ${H2_USER:-sa}
@@ -43,17 +42,13 @@ services:
 
       # ─── java-class-context ─────────────────────────────────────────
       CLASS_CONTEXT_URL: ${CLASS_CONTEXT_URL:-http://10.1.5.97:8084}
-      # Важно: вложенные подстановки Docker Compose не поддерживает.
-      # Если CLASS_CONTEXT_GITLAB_TOKEN = GITLAB_TOKEN, задайте явно в .env.
       CLASS_CONTEXT_GITLAB_TOKEN: ${CLASS_CONTEXT_GITLAB_TOKEN}
 
       # ─── webhook-distributor ─────────────────────────────────────────
       WEBHOOK_DISTRIBUTOR_URL: ${WEBHOOK_DISTRIBUTOR_URL:-http://10.1.5.97:8081}
 
-      # ─── Промпты (опционально, если нужно переопределить без пересборки) ──
-      # Пропишите и смонтируйте файл через volumes (см. ниже):
-      #APP_AI_GROUPING_PROMPT_FILE: file:/etc/mr-checker/grouping-prompt.md
-      #APP_AI_REVIEW_PROMPT_FILE:   file:/etc/mr-checker/system-prompt.md
+      # ─── MCP сервер (jmrplens/gitlab-mcp-server) ────────────────────
+      MCP_SERVER_URL: http://supergateway-gitlab:8811/mcp
 
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
@@ -61,16 +56,51 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    depends_on:
+      supergateway-gitlab:
+        condition: service_healthy
 
-    # Опционально: подключить кастомные промпты без пересборки:
-    # volumes:
-    #   - mr-checker-data:/data
-    #   - ./my-grouping-prompt.md:/etc/mr-checker/grouping-prompt.md:ro
-    #   - ./my-system-prompt.md:/etc/mr-checker/system-prompt.md:ro
+  # ─── GitLab MCP (jmrplens/gitlab-mcp-server через supergateway) ─────
+  #
+  # jmrplens/gitlab-mcp-server — Go-бинарник, 866 actions для GitLab Free/CE.
+  # Протестирован на GitLab 13.11.1: connection verified, 866 actions registered.
+  # WARN «failed to detect PAT scopes, 404» — ожидаемо для 13.11 (endpoint
+  # /personal_access_tokens/self появился в 14.10). Все инструменты регистрируются.
+  #
+  # supergateway транслирует stdio ↔ Streamable HTTP (порт 8811).
+  # Open WebUI подключается к http://supergateway-gitlab:8811/mcp как MCP-сервер.
+  supergateway-gitlab:
+    image: supercorp/supergateway:latest
+    container_name: supergateway-gitlab
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-8811}:8811"
+    environment:
+      # supergateway запускает MCP-сервер как дочерний процесс через stdio
+      # и выставляет его наружу как Streamable HTTP на порту 8811.
+      SUPERGATEWAY_PORT: 8811
+    command: >
+      --port 8811
+      --stdio
+      "docker run -i --rm
+        --network host
+        -e GITLAB_URL=${GITLAB_URL:-http://10.1.5.6}
+        -e GITLAB_TOKEN=${GITLAB_TOKEN}
+        -e GITLAB_TIER=free
+        -e GITLAB_SKIP_TLS_VERIFY=true
+        -e TOOL_SURFACE=meta
+        ghcr.io/jmrplens/gitlab-mcp-server:latest
+        --http=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # supergateway запускает docker run
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8811/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 # Named volume — данные живут вне контейнера.
-# Путь на хосте управляется Docker Engine (обычно /var/lib/docker/volumes/).
-# Для конкретного bind mount замените на: driver: local + device: /host/path
 volumes:
   mr-checker-data:
     name: mr-checker-data
