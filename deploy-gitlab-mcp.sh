@@ -318,6 +318,10 @@ services:
       STREAMABLE_HTTP: "true"
       HOST: "0.0.0.0"
       PORT: "${CONTAINER_PORT}"
+      # REMOTE_AUTHORIZATION=true — обязательно при STREAMABLE_HTTP=true + PAT
+      # (требование gitlab-org/gitlab-mcp начиная с v0.x: без этого флага
+      #  сервер падает с ошибкой Configuration validation failed)
+      REMOTE_AUTHORIZATION: "true"
       # Проект по умолчанию (опционально)
       MR_MCP_GITLAB_PROJECT_ID: \${GITLAB_PROJECT_ID}
       # Режим только-чтение (опционально)
@@ -359,7 +363,7 @@ MCP_PORT="${MCP_PORT}"
 CONTAINER_PORT="${CONTAINER_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
 
-[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#\~/}"
+[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#~/}"
 cd "\${APP_DIR}"
 
 [[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
@@ -634,7 +638,7 @@ APP_DIR="${APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
 
-[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#\~/}"
+[[ "\${APP_DIR}" == ~* ]] && APP_DIR="\${HOME}/\${APP_DIR#~/}"
 cd "\${APP_DIR}"
 
 [[ ! -f .env               ]] && fail "Не найден .env в \${APP_DIR}"
