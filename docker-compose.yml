@@ -68,6 +68,42 @@ services:
     #   - ./my-grouping-prompt.md:/etc/mr-checker/grouping-prompt.md:ro
     #   - ./my-system-prompt.md:/etc/mr-checker/system-prompt.md:ro
 
+  # ─── GitLab MCP Server (zereight/gitlab-mcp) ─────────────────────────────
+  # Предоставляет MCP-инструменты для работы с GitLab через Streamable HTTP.
+  # Open WebUI подключается как Tool Server: URL http://<host>:8083, Type: mcp
+  #
+  # Образ с Docker Hub (ghcr.io заблокирован корпоративным прокси).
+  # Streamable HTTP транспорт встроен — supergateway не нужен.
+  #
+  # Эндпоинты:
+  #   GET  /health  — health check
+  #   POST /mcp     — MCP Streamable HTTP (JSON-RPC)
+  gitlab-mcp:
+    image: zereight050/gitlab-mcp:latest
+    container_name: gitlab-mcp
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-8083}:3000"
+    environment:
+      # GitLab Personal Access Token (права: api, read_repository)
+      GITLAB_PERSONAL_ACCESS_TOKEN: ${GITLAB_TOKEN}
+      # URL GitLab API v4
+      GITLAB_API_URL: ${GITLAB_API_URL:-http://10.1.5.6/api/v4}
+      # Включить Streamable HTTP транспорт (требуется для Open WebUI v0.9.6+)
+      STREAMABLE_HTTP: "true"
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      # Опционально: только чтение (без create/update/delete операций)
+      #GITLAB_READ_ONLY_MODE: "true"
+      # Опционально: включить wiki-инструменты
+      #USE_GITLAB_WIKI: "false"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 # Named volume — данные живут вне контейнера.
 # Путь на хосте управляется Docker Engine (обычно /var/lib/docker/volumes/).
 # Для конкретного bind mount замените на: driver: local + device: /host/path
