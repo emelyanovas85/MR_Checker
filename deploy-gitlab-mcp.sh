@@ -15,6 +15,9 @@
 # --mcp-port Порт MCP-сервера на удалённой машине (по умолчанию: 8083)
 # --gitlab-url URL GitLab API v4 (по умолчанию: http://10.1.5.6/api/v4)
 # --token GitLab Personal Access Token (или через GITLAB_PERSONAL_ACCESS_TOKEN)
+# --project ID или namespace/name проекта по умолчанию (например, 'mygroup/myrepo' или '42').
+#            Если задан — LLM не обязан указывать project_id в каждом инструменте.
+#            Передаётся в контейнер как MR_MCP_GITLAB_PROJECT_ID.
 # --read-only Запустить сервер в read-only режиме
 # --use-wiki Включить инструменты для wiki
 # --no-pull Не выполнять docker pull локально (использовать уже существующий локальный образ)
@@ -22,6 +25,8 @@
 #
 # Примеры:
 # ./deploy-gitlab-mcp.sh --token glpat-xxx
+# ./deploy-gitlab-mcp.sh --token glpat-xxx --project mygroup/myrepo
+# ./deploy-gitlab-mcp.sh --token glpat-xxx --project 42
 # ./deploy-gitlab-mcp.sh -h 192.168.1.100 -u deploy --token glpat-xxx
 # ./deploy-gitlab-mcp.sh -i ~/.ssh/id_rsa --gitlab-url http://10.1.5.6/api/v4 --token glpat-xxx
 # ./deploy-gitlab-mcp.sh --read-only --use-wiki --token glpat-xxx
@@ -86,6 +91,7 @@ APP_DIR="~/gitlab-mcp"
 MCP_PORT="8083"
 GITLAB_API_URL="http://10.1.5.6/api/v4"
 GITLAB_PERSONAL_ACCESS_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN:-}"
+GITLAB_PROJECT_ID="${GITLAB_PROJECT_ID:-}"
 GITLAB_READ_ONLY_MODE="false"
 USE_GITLAB_WIKI="false"
 NO_PULL=false
@@ -107,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --mcp-port)     MCP_PORT="$2";                          shift 2 ;;
     --gitlab-url)   GITLAB_API_URL="$2";                    shift 2 ;;
     --token)        GITLAB_PERSONAL_ACCESS_TOKEN="$2";      shift 2 ;;
+    --project)      GITLAB_PROJECT_ID="$2";                 shift 2 ;;
     --read-only)    GITLAB_READ_ONLY_MODE="true";           shift   ;;
     --use-wiki)     USE_GITLAB_WIKI="true";                 shift   ;;
     --no-pull)      NO_PULL=true;                           shift   ;;
@@ -124,6 +131,10 @@ if [[ -z "${GITLAB_PERSONAL_ACCESS_TOKEN}" ]]; then
 fi
 
 [[ ! "${MCP_PORT}" =~ ^[0-9]+$ ]] && error "Некорректный порт: ${MCP_PORT}"
+
+if [[ -n "${GITLAB_PROJECT_ID}" ]]; then
+  log "Дефолтный проект: ${GITLAB_PROJECT_ID} (будет передан как MR_MCP_GITLAB_PROJECT_ID)"
+fi
 
 # ── SSH ControlMaster: одно подключение — один ввод пароля ────────────────────
 SSH_CTRL_DIR="$(mktemp -d /tmp/ssh-ctrl-XXXXXX)"
@@ -250,6 +261,7 @@ COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
 cat > "${ENV_FILE}" <<EOF_ENV
 GITLAB_API_URL=${GITLAB_API_URL}
 GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_PERSONAL_ACCESS_TOKEN}
+GITLAB_PROJECT_ID=${GITLAB_PROJECT_ID}
 GITLAB_READ_ONLY_MODE=${GITLAB_READ_ONLY_MODE}
 USE_GITLAB_WIKI=${USE_GITLAB_WIKI}
 MCP_PORT=${MCP_PORT}
@@ -267,6 +279,7 @@ services:
     environment:
       GITLAB_API_URL: ${GITLAB_API_URL}
       GITLAB_PERSONAL_ACCESS_TOKEN: ${GITLAB_PERSONAL_ACCESS_TOKEN}
+      MR_MCP_GITLAB_PROJECT_ID: ${GITLAB_PROJECT_ID}
       GITLAB_READ_ONLY_MODE: ${GITLAB_READ_ONLY_MODE}
       USE_GITLAB_WIKI: ${USE_GITLAB_WIKI}
       PORT: ${MCP_PORT}
@@ -291,7 +304,7 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "\${BLUE}[\$(date '+%H:%M:%S')]\${NC} \$*"; }
 ok()   { echo -e "\${GREEN}[\$(date '+%H:%M:%S')] ✓\${NC} \$*"; }
-warn() { echo -e "\${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
+warn() { echo -e "${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
 fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 
 APP_DIR="${APP_DIR}"
@@ -366,10 +379,8 @@ else
 fi
 
 # ── Проверка 2: Полный MCP handshake: initialize → notifications/initialized → tools/list ──
-# Это точная проверка того, что --stateful работает и тулы загружаются.
 log "Проверка 2/3: MCP handshake (initialize → notif → tools/list)..."
 
-# Step 1: initialize — получаем Mcp-Session-Id
 INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
@@ -389,7 +400,6 @@ else
   fi
 fi
 
-# Step 2: notifications/initialized
 NOTIF_HEADERS=""
 [[ -n "\${SESSION_ID:-}" ]] && NOTIF_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
 eval curl -s --noproxy localhost,127.0.0.1 -X POST \
@@ -401,7 +411,6 @@ eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   --max-time 5 >/dev/null 2>&1 || true
 ok "notifications/initialized: отправлено"
 
-# Step 3: tools/list
 LIST_HEADERS=""
 [[ -n "\${SESSION_ID:-}" ]] && LIST_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
 LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
