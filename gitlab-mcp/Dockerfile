@@ -1,14 +1,14 @@
 # =============================================================================
 # GitLab MCP Server — Dockerfile
 #
-# Базовый образ: supercorp/supergateway:3.2.0
-# GitLab MCP файлы копируются из mcp/gitlab:latest (локальный образ).
+# Базовый образ: node:20-alpine (сборка собственного index.js)
+# Финальный образ: supercorp/supergateway:3.2.0
 #
-# ВАЖНО: @modelcontextprotocol/sdk зафиксирован на 1.10.2
-# Начиная с 1.11.0 SDK сменил API server.tool():
-#   z.object({...}).describe(desc) больше не распознаётся как валидная схема
-#   (isZodRawShapeCompat возвращает false), что вызывает краш при старте.
-# SDK 1.10.2 принимает существующий index.js без изменений.
+# Отличия от предыдущей версии (kopfrechner/gitlab-mr-mcp):
+#   - Нет зависимости от локального образа mcp/gitlab:latest
+#   - Собственный index.js — совместим с GitLab 13.11 API v4
+#   - @modelcontextprotocol/sdk зафиксирован на 1.10.2
+#   - process.stdin.resume() держит node живым в --stateful режиме
 #
 # ВАЖНО: --stateful ОБЯЗАТЕЛЕН
 # Без него supergateway запускает новый процесс на каждый POST.
@@ -25,16 +25,28 @@
 # с именем «node index.js» (со пробелом) — и сразу падает с ENOENT.
 # =============================================================================
 
-FROM supercorp/supergateway:3.2.0
-
-# Копируем файлы GitLab MCP Server из локального образа
-COPY --from=mcp/gitlab:latest /app /app
+# --- Stage 1: установка зависимостей ---
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Фиксируем SDK на 1.10.2 — последняя версия совместимая с текущим index.js.
-# 1.11.0+ сменили server.tool() API: z.object().describe() больше не работает.
-RUN npm install @modelcontextprotocol/sdk@1.10.2 --save --no-fund --no-audit
+COPY package.json ./
+
+# Устанавливаем зависимости без devDependencies
+RUN npm install --omit=dev --no-fund --no-audit
+
+COPY index.js ./
+
+# --- Stage 2: финальный образ на базе supergateway ---
+FROM supercorp/supergateway:3.2.0
+
+# Устанавливаем Node.js в образ supergateway (который на базе Alpine)
+RUN apk add --no-cache nodejs
+
+# Копируем приложение из builder-стадии
+COPY --from=builder /app /app
+
+WORKDIR /app
 
 # supergateway запускается как ENTRYPOINT базового образа.
 # --stateful: сохраняет дочерний процесс между запросами одной MCP-сессии.
