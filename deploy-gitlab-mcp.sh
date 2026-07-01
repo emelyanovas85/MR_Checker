@@ -44,7 +44,18 @@
 #
 # ─── РЕЖИМЫ СБОРКИ ОБРАЗА ──────────────────────────────────────────────────
 #
-# Режим 1 (по умолчанию): mcp/gitlab + supergateway
+# Режим 1 (по умолчанию): сборка из исходников zereight/gitlab-mcp
+# ──────────────────────────────────────────────────────────────────────────
+# Клонирует github.com/zereight/gitlab-mcp на ЛОКАЛЬНОЙ машине,
+# компилирует TypeScript (npm ci + tsc), строит production-образ.
+# Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
+# нативно через env STREAMABLE_HTTP=true.
+# Включает все 50+ инструментов, в том числе для комментариев к MR:
+#   create_note, create_merge_request_thread, mr_discussions,
+#   resolve_merge_request_thread, add_merge_request_thread_note.
+# Готовый образ zereight-gitlab-mcp:local передаётся на сервер через SSH.
+#
+# Режим 2 (--no-build-from-source): mcp/gitlab + supergateway
 # ──────────────────────────────────────────────────
 # Образ mcp/gitlab содержит только stdio-транспорт.
 # Поверх него добавляется supercorp/supergateway:3.2.0 — официальный образ
@@ -61,17 +72,6 @@
 #
 # ВАЖНО — Accept header порядок (text/event-stream ПЕРВЫМ):
 # Open WebUI и Spring AI проверяют наличие text/event-stream первым.
-#
-# Режим 2 (--build-from-source): сборка из исходников zereight/gitlab-mcp
-# ──────────────────────────────────────────────────────────────────────────
-# Клонирует github.com/zereight/gitlab-mcp на ЛОКАЛЬНОЙ машине,
-# компилирует TypeScript (npm ci + tsc), строит production-образ.
-# Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
-# нативно через env STREAMABLE_HTTP=true.
-# Включает все 50+ инструментов, в том числе для комментариев к MR:
-#   create_note, create_merge_request_thread, mr_discussions,
-#   resolve_merge_request_thread, add_merge_request_thread_note.
-# Готовый образ zereight-gitlab-mcp:local передаётся на сервер через SSH.
 #
 # Для Open WebUI укажите в настройках Tool Servers:
 # URL:  http://<host>:<port>/mcp
@@ -109,7 +109,8 @@ USE_GITLAB_WIKI="false"
 NO_PULL=false
 
 # ── Переменные режима --build-from-source ────────────────────────────────────
-BUILD_FROM_SOURCE=false
+# По умолчанию включён режим сборки из исходников zereight/gitlab-mcp
+BUILD_FROM_SOURCE=true
 MCP_REF="main"
 # Имя локального образа при сборке из исходников
 BUILT_SOURCE_IMAGE_NAME="zereight-gitlab-mcp:local"
@@ -317,8 +318,6 @@ services:
       STREAMABLE_HTTP: "true"
       HOST: "0.0.0.0"
       PORT: "${CONTAINER_PORT}"
-      # Включаем все группы инструментов (включая комментарии к MR)
-      TOOL_CATEGORIES: "all"
       # Проект по умолчанию (опционально)
       MR_MCP_GITLAB_PROJECT_ID: \${GITLAB_PROJECT_ID}
       # Режим только-чтение (опционально)
@@ -479,7 +478,7 @@ elif echo "\${LIST_OUT}" | grep -q '"tools"'; then
   if echo "\${LIST_OUT}" | grep -q 'create_note\|mr_discussions\|merge_request_thread'; then
     ok "Инструменты для комментариев к MR: присутствуют ✓"
   else
-    warn "Инструменты для комментариев к MR не обнаружены в tools/list — проверьте TOOL_CATEGORIES"
+    warn "Инструменты для комментариев к MR не обнаружены в tools/list"
   fi
 elif echo "\${LIST_OUT}" | grep -q '"error"'; then
   warn "tools/list вернул ошибку: \${LIST_OUT:0:300}"
