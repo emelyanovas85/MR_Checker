@@ -60,7 +60,7 @@
 # учётные данные GitHub не нужны. Если указан --local-tarball, использует
 # локальный файл вместо скачивания. Компилирует TypeScript (npm ci + tsc),
 # строит production-образ используя родной Dockerfile из репозитория.
-# Для сборки используется DOCKER_BUILDKIT=1 (поддержка --mount=type=cache).
+# Для сборки используется обычный docker build (BuildKit не требуется).
 # Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
 # нативно через env STREAMABLE_HTTP=true.
 # Включает все 50+ инструментов, в том числе для комментариев к MR:
@@ -322,27 +322,32 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
 
   # ── Dockerfile ───────────────────────────────────────────────────────────────
   # Используем Dockerfile из самого репозитория zereight/gitlab-mcp (он уже в BUILD_CTX).
-  # Родной Dockerfile использует --mount=type=cache, поэтому требует DOCKER_BUILDKIT=1.
-  # Если родного Dockerfile нет (маловероятно) — падаем с понятной ошибкой.
+  # Сборка выполняется обычным docker build (без DOCKER_BUILDKIT=1 и без buildx).
+  # Если Dockerfile содержит --mount=type=cache (BuildKit-синтаксис), удаляем этот
+  # флаг чтобы сборка работала на стандартном docker build без buildx.
   if [[ ! -f "${BUILD_CTX}/Dockerfile" ]]; then
     error "Dockerfile не найден в исходниках zereight/gitlab-mcp (${BUILD_CTX}/Dockerfile).
 Убедитесь что архив содержит корректные исходники репозитория."
   fi
 
-  # Родной Dockerfile не содержит явного шага 'npm run build' (tsc).
-  # В репозитории 'npm install' запускает postinstall→prepare→build автоматически
-  # через package.json scripts. Проверяем и при необходимости добавляем шаг.
+  # Убираем BuildKit-специфичный синтаксис --mount=type=cache из RUN-инструкций.
+  # Обычный docker build не понимает этот флаг и завершается с ошибкой.
+  # npm-кэш при этом не используется, но сборка проходит корректно.
+  if grep -q -- '--mount=type=cache' "${BUILD_CTX}/Dockerfile" 2>/dev/null; then
+    sed -i 's/RUN --mount=type=cache,[^ ]* /RUN /g' "${BUILD_CTX}/Dockerfile"
+    log "Dockerfile пропатчен: удалены --mount=type=cache флаги (не поддерживаются без buildx)"
+  fi
+
+  # Добавляем явный npm run build если его нет (компиляция TypeScript)
   if ! grep -q 'npm run build\|tsc\|postinstall' "${BUILD_CTX}/Dockerfile" 2>/dev/null; then
-    # Добавляем явный RUN npm run build перед production-стадией
-    # Патчим первую стадию: после npm install добавляем npm run build
-    sed -i 's|RUN --mount=type=cache,target=/root/.npm npm install|RUN --mount=type=cache,target=/root/.npm npm install\nRUN npm run build|' \
+    sed -i 's|RUN npm install|RUN npm install\nRUN npm run build|' \
       "${BUILD_CTX}/Dockerfile" 2>/dev/null || true
     log "Dockerfile пропатчен: добавлен явный 'npm run build' после 'npm install'"
   fi
 
-  log "Сборка образа ${BUILT_SOURCE_IMAGE_NAME} из исходников (DOCKER_BUILDKIT=1)..."
+  log "Сборка образа ${BUILT_SOURCE_IMAGE_NAME} из исходников (обычный docker build)..."
   log "Используется родной Dockerfile из репозитория zereight/gitlab-mcp"
-  DOCKER_BUILDKIT=1 docker build --no-cache -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
+  docker build --no-cache -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
     || error "Не удалось собрать образ ${BUILT_SOURCE_IMAGE_NAME}"
   rm -rf "${BUILD_CTX}"
   ok "Образ ${BUILT_SOURCE_IMAGE_NAME} собран локально (ref=${ACTUAL_REF}, все 50+ инструментов, без supergateway)"
