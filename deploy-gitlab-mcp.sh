@@ -384,6 +384,11 @@ services:
       - "\${MCP_PORT}:${CONTAINER_PORT}"
     environment:
       # GitLab Personal Access Token (права: api, read_repository)
+      # REMOTE_AUTHORIZATION намеренно НЕ выставлен: при REMOTE_AUTHORIZATION=true
+      # сервер берёт токен из заголовка Authorization входящего запроса (от Open WebUI),
+      # а не из переменной окружения GITLAB_PERSONAL_ACCESS_TOKEN. Open WebUI передаёт
+      # туда свой служебный токен, а не GitLab PAT — отсюда 401 Unauthorized от GitLab API.
+      # Без REMOTE_AUTHORIZATION сервер использует GITLAB_PERSONAL_ACCESS_TOKEN напрямую.
       GITLAB_PERSONAL_ACCESS_TOKEN: \${GITLAB_PERSONAL_ACCESS_TOKEN}
       # URL GitLab API v4
       GITLAB_API_URL: \${GITLAB_API_URL}
@@ -391,10 +396,6 @@ services:
       STREAMABLE_HTTP: "true"
       HOST: "0.0.0.0"
       PORT: "${CONTAINER_PORT}"
-      # REMOTE_AUTHORIZATION=true — обязательно при STREAMABLE_HTTP=true + PAT
-      # (требование gitlab-org/gitlab-mcp начиная с v0.x: без этого флага
-      #  сервер падает с ошибкой Configuration validation failed)
-      REMOTE_AUTHORIZATION: "true"
       # Проект по умолчанию (опционально)
       MR_MCP_GITLAB_PROJECT_ID: \${GITLAB_PROJECT_ID}
       # Режим только-чтение (опционально)
@@ -428,15 +429,13 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "\${BLUE}[\$(date '+%H:%M:%S')]\${NC} \$*"; }
 ok()   { echo -e "\${GREEN}[\$(date '+%H:%M:%S')] ✓\${NC} \$*"; }
-warn() { echo -e "\${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
+warn() { echo -e "${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
 fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 
 APP_DIR="${REMOTE_APP_DIR}"
 MCP_PORT="${MCP_PORT}"
 CONTAINER_PORT="${CONTAINER_PORT}"
 DOCKER_COMPOSE="${DOCKER_COMPOSE}"
-# Токен нужен для smoke-test MCP handshake — REMOTE_AUTHORIZATION=true требует
-# заголовок Authorization: Bearer <token> в каждом запросе к /mcp
 GITLAB_TOKEN="${GITLAB_PERSONAL_ACCESS_TOKEN}"
 
 cd "\${APP_DIR}"
@@ -505,17 +504,15 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake ────────────────────────────────────────────────
-# REMOTE_AUTHORIZATION=true требует заголовок "Authorization: Bearer <token>"
-# во всех запросах к /mcp. Без него сервер возвращает 401 с сообщением
-# "Missing Private-Token, JOB-TOKEN, or Authorization header".
+# ── Проверка 2: MCP handshake (без Authorization — токен в env) ──────────────
+# REMOTE_AUTHORIZATION не выставлен, поэтому Authorization заголовок НЕ нужен.
+# Сервер сам использует GITLAB_PERSONAL_ACCESS_TOKEN из переменной окружения.
 log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
 
 INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
@@ -537,7 +534,6 @@ eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   \${NOTIF_HEADERS} \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   --max-time 5 >/dev/null 2>&1 || true
@@ -549,7 +545,6 @@ LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
-  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   \${LIST_HEADERS} \
   -d '{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
@@ -712,7 +707,7 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "\${BLUE}[\$(date '+%H:%M:%S')]\${NC} \$*"; }
 ok()   { echo -e "\${GREEN}[\$(date '+%H:%M:%S')] ✓\${NC} \$*"; }
-warn() { echo -e "\${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
+warn() { echo -e "${YELLOW}[\$(date '+%H:%M:%S')] ⚠\${NC} \$*"; }
 fail() { echo -e "\${RED}[\$(date '+%H:%M:%S')] ✗\${NC} \$*" >&2; exit 1; }
 
 APP_DIR="${REMOTE_APP_DIR}"
