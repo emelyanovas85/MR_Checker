@@ -68,6 +68,14 @@
 #   resolve_merge_request_thread, add_merge_request_thread_note.
 # Готовый образ zereight-gitlab-mcp:local передаётся на сервер через SSH.
 #
+# ─── АВТОРИЗАЦИЯ (REMOTE_AUTHORIZATION) ────────────────────────────────────
+# zereight/gitlab-mcp требует REMOTE_AUTHORIZATION=true при STREAMABLE_HTTP=true.
+# Это жёсткая валидация в коде: без неё сервер не стартует.
+# При REMOTE_AUTHORIZATION=true токен берётся из заголовка каждого запроса:
+#   Authorization: Bearer <GitLab PAT>
+# Open WebUI: Settings → Tool Servers → поле «API Key» = GitLab PAT.
+# Open WebUI автоматически передаёт его как Authorization: Bearer <token>.
+#
 # Режим 2 (--no-build-from-source): mcp/gitlab + supergateway
 # ──────────────────────────────────────────────────
 # Образ mcp/gitlab содержит только stdio-транспорт.
@@ -89,6 +97,7 @@
 # Для Open WebUI укажите в настройках Tool Servers:
 # URL:  http://<host>:<port>/mcp
 # Type: mcp
+# API Key: <GitLab Personal Access Token>
 # =============================================================================
 
 set -euo pipefail
@@ -365,7 +374,6 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
 
   cat > "${ENV_FILE}" <<EOF_ENV
 GITLAB_API_URL=${GITLAB_API_URL}
-GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_PERSONAL_ACCESS_TOKEN}
 GITLAB_PROJECT_ID=${GITLAB_PROJECT_ID}
 GITLAB_READ_ONLY_MODE=${GITLAB_READ_ONLY_MODE}
 USE_GITLAB_WIKI=${USE_GITLAB_WIKI}
@@ -383,13 +391,12 @@ services:
     ports:
       - "\${MCP_PORT}:${CONTAINER_PORT}"
     environment:
-      # GitLab Personal Access Token (права: api, read_repository)
-      # REMOTE_AUTHORIZATION намеренно НЕ выставлен: при REMOTE_AUTHORIZATION=true
-      # сервер берёт токен из заголовка Authorization входящего запроса (от Open WebUI),
-      # а не из переменной окружения GITLAB_PERSONAL_ACCESS_TOKEN. Open WebUI передаёт
-      # туда свой служебный токен, а не GitLab PAT — отсюда 401 Unauthorized от GitLab API.
-      # Без REMOTE_AUTHORIZATION сервер использует GITLAB_PERSONAL_ACCESS_TOKEN напрямую.
-      GITLAB_PERSONAL_ACCESS_TOKEN: \${GITLAB_PERSONAL_ACCESS_TOKEN}
+      # REMOTE_AUTHORIZATION=true ОБЯЗАТЕЛЕН при STREAMABLE_HTTP=true.
+      # zereight/gitlab-mcp откажется стартовать без него — жёсткая валидация в коде.
+      # При этом режиме токен берётся из заголовка каждого запроса:
+      #   Authorization: Bearer <GitLab PAT>
+      # Open WebUI: Settings → Tool Servers → поле «API Key» = GitLab PAT.
+      REMOTE_AUTHORIZATION: "true"
       # URL GitLab API v4
       GITLAB_API_URL: \${GITLAB_API_URL}
       # Нативный Streamable HTTP (supergateway не нужен)
@@ -504,15 +511,16 @@ else
   warn "Health endpoint ответил неожиданно: \${HEALTH_RESPONSE}"
 fi
 
-# ── Проверка 2: MCP handshake (без Authorization — токен в env) ──────────────
-# REMOTE_AUTHORIZATION не выставлен, поэтому Authorization заголовок НЕ нужен.
-# Сервер сам использует GITLAB_PERSONAL_ACCESS_TOKEN из переменной окружения.
-log "Проверка 2/3: MCP handshake (initialize → notifications/initialized → tools/list)..."
+# ── Проверка 2: MCP handshake с Bearer токеном ───────────────────────────────
+# REMOTE_AUTHORIZATION=true: сервер требует Authorization: Bearer <token> в каждом запросе.
+# Используем токен переданный скрипту через --token.
+log "Проверка 2/3: MCP handshake с Authorization: Bearer (initialize → notifications/initialized → tools/list)..."
 
 INIT_OUT=\$(curl -si --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream, application/json' \
+  -H "Authorization: Bearer \${GITLAB_TOKEN}" \
   -d '{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"deploy-check","version":"1.0"}}}' \
   --max-time 10 2>/dev/null || echo "CURL_FAILED")
 
@@ -528,8 +536,8 @@ else
   fi
 fi
 
-NOTIF_HEADERS=""
-[[ -n "\${SESSION_ID:-}" ]] && NOTIF_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+NOTIF_HEADERS="-H 'Authorization: Bearer \${GITLAB_TOKEN}'"
+[[ -n "\${SESSION_ID:-}" ]] && NOTIF_HEADERS="\${NOTIF_HEADERS} -H 'Mcp-Session-Id: \${SESSION_ID}'"
 eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
@@ -539,8 +547,8 @@ eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   --max-time 5 >/dev/null 2>&1 || true
 ok "notifications/initialized: отправлено"
 
-LIST_HEADERS=""
-[[ -n "\${SESSION_ID:-}" ]] && LIST_HEADERS="-H 'Mcp-Session-Id: \${SESSION_ID}'"
+LIST_HEADERS="-H 'Authorization: Bearer \${GITLAB_TOKEN}'"
+[[ -n "\${SESSION_ID:-}" ]] && LIST_HEADERS="\${LIST_HEADERS} -H 'Mcp-Session-Id: \${SESSION_ID}'"
 LIST_OUT=\$(eval curl -s --noproxy localhost,127.0.0.1 -X POST \
   "http://localhost:\${MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
@@ -583,9 +591,10 @@ echo -e "\${GREEN} Режим      : zereight/gitlab-mcp (нативный Strea
 echo -e "\${GREEN} MCP URL    : http://\${SERVER_IP}:\${MCP_PORT}/mcp\${NC}"
 echo -e "\${GREEN} Health URL : http://\${SERVER_IP}:\${MCP_PORT}/health\${NC}"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
-echo -e "\${YELLOW} Open WebUI → Tool Servers → Add:\${NC}"
-echo -e "   URL:  http://\${SERVER_IP}:\${MCP_PORT}/mcp"
-echo -e "   Type: mcp"
+echo -e "\${YELLOW} Open WebUI → Settings → Tool Servers → Add:\${NC}"
+echo -e "   URL    : http://\${SERVER_IP}:\${MCP_PORT}/mcp"
+echo -e "   Type   : mcp"
+echo -e "   API Key: <GitLab Personal Access Token>"
 echo -e "\${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 REMOTE_DEPLOY
 
