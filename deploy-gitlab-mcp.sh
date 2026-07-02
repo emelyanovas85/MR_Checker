@@ -59,7 +59,8 @@
 # Скачивает архив исходников через curl (tar.gz) с github.com — git и
 # учётные данные GitHub не нужны. Если указан --local-tarball, использует
 # локальный файл вместо скачивания. Компилирует TypeScript (npm ci + tsc),
-# строит production-образ.
+# строит production-образ используя родной Dockerfile из репозитория.
+# Для сборки используется DOCKER_BUILDKIT=1 (поддержка --mount=type=cache).
 # Supergateway не нужен — Streamable HTTP встроен в zereight/gitlab-mcp
 # нативно через env STREAMABLE_HTTP=true.
 # Включает все 50+ инструментов, в том числе для комментариев к MR:
@@ -260,14 +261,13 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
   if [[ -n "${LOCAL_TARBALL}" ]]; then
     # ── Режим: явно указанный локальный архив ───────────────────────────────
     log "Распаковка локального архива ${LOCAL_TARBALL}..."
-    mkdir -p "${BUILD_CTX}/src"
-    tar -xzf "${LOCAL_TARBALL}" -C "${BUILD_CTX}/src" --strip-components=1 \
+    tar -xzf "${LOCAL_TARBALL}" -C "${BUILD_CTX}" --strip-components=1 \
       || error "Не удалось распаковать архив ${LOCAL_TARBALL}"
-    if [[ ! -f "${BUILD_CTX}/src/package.json" ]]; then
+    if [[ ! -f "${BUILD_CTX}/package.json" ]]; then
       error "Архив не содержит package.json — убедитесь что это исходники zereight/gitlab-mcp"
     fi
     ACTUAL_REF="local-tarball:$(basename "${LOCAL_TARBALL}")"
-    ok "Исходники распакованы из локального архива ($(ls "${BUILD_CTX}/src" | wc -l) файлов)"
+    ok "Исходники распакованы из локального архива ($(ls "${BUILD_CTX}" | wc -l) файлов)"
   else
     # ── Режим: скачивание архива через curl (без git, без учётных данных) ───
     # GitHub отдаёт публичный tar.gz архив без авторизации.
@@ -287,8 +287,7 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
     log "Скачивание исходников zereight/gitlab-mcp@${MCP_REF} через curl..."
     log "URL: ${MCP_TARBALL_URL}"
 
-    TARBALL_DEST="${BUILD_CTX}/gitlab-mcp.tar.gz"
-    mkdir -p "${BUILD_CTX}/src"
+    TARBALL_DEST="$(mktemp /tmp/gitlab-mcp-XXXXXX.tar.gz)"
 
     # curl: -L следует редиректам (GitHub делает редирект на codeload.github.com)
     #        --fail завершается с ошибкой при HTTP 4xx/5xx
@@ -305,64 +304,45 @@ if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
     fi
 
     TARBALL_SIZE=$(du -sh "${TARBALL_DEST}" 2>/dev/null | cut -f1)
-    log "Архив скачан (${TARBALL_SIZE}), распаковка..."
+    log "Архив скачан (${TARBALL_SIZE}), распаковка в ${BUILD_CTX}..."
 
-    tar -xzf "${TARBALL_DEST}" -C "${BUILD_CTX}/src" --strip-components=1 \
+    # Распаковываем прямо в BUILD_CTX (исходники окажутся в корне контекста сборки)
+    tar -xzf "${TARBALL_DEST}" -C "${BUILD_CTX}" --strip-components=1 \
       || error "Не удалось распаковать скачанный архив"
 
     rm -f "${TARBALL_DEST}"
 
-    if [[ ! -f "${BUILD_CTX}/src/package.json" ]]; then
+    if [[ ! -f "${BUILD_CTX}/package.json" ]]; then
       error "Архив не содержит package.json — возможно неверный MCP_REF: ${MCP_REF}"
     fi
 
     ACTUAL_REF="${MCP_REF}"
-    ok "Исходники zereight/gitlab-mcp@${MCP_REF} скачаны и распакованы ($(ls "${BUILD_CTX}/src" | wc -l) файлов)"
+    ok "Исходники zereight/gitlab-mcp@${MCP_REF} скачаны и распакованы ($(ls "${BUILD_CTX}" | wc -l) файлов)"
   fi
 
-  # Пишем Dockerfile прямо в BUILD_CTX (не в src/, чтобы не конфликтовать)
-  cat > "${BUILD_CTX}/Dockerfile" <<'DOCKERFILE'
-# ─── Стадия 1: сборка TypeScript ─────────────────────────────────────────────
-FROM node:22-alpine AS builder
+  # ── Dockerfile ───────────────────────────────────────────────────────────────
+  # Используем Dockerfile из самого репозитория zereight/gitlab-mcp (он уже в BUILD_CTX).
+  # Родной Dockerfile использует --mount=type=cache, поэтому требует DOCKER_BUILDKIT=1.
+  # Если родного Dockerfile нет (маловероятно) — падаем с понятной ошибкой.
+  if [[ ! -f "${BUILD_CTX}/Dockerfile" ]]; then
+    error "Dockerfile не найден в исходниках zereight/gitlab-mcp (${BUILD_CTX}/Dockerfile).
+Убедитесь что архив содержит корректные исходники репозитория."
+  fi
 
-WORKDIR /build
+  # Родной Dockerfile не содержит явного шага 'npm run build' (tsc).
+  # В репозитории 'npm install' запускает postinstall→prepare→build автоматически
+  # через package.json scripts. Проверяем и при необходимости добавляем шаг.
+  if ! grep -q 'npm run build\|tsc\|postinstall' "${BUILD_CTX}/Dockerfile" 2>/dev/null; then
+    # Добавляем явный RUN npm run build перед production-стадией
+    # Патчим первую стадию: после npm install добавляем npm run build
+    sed -i 's|RUN --mount=type=cache,target=/root/.npm npm install|RUN --mount=type=cache,target=/root/.npm npm install\nRUN npm run build|' \
+      "${BUILD_CTX}/Dockerfile" 2>/dev/null || true
+    log "Dockerfile пропатчен: добавлен явный 'npm run build' после 'npm install'"
+  fi
 
-# Копируем исходники из локального контекста (папка src/)
-COPY src/package.json src/package-lock.json ./
-
-# Устанавливаем ВСЕ зависимости (включая devDependencies — нужны для tsc)
-RUN npm ci --ignore-scripts
-
-COPY src/ ./
-
-# Компилируем TypeScript → build/
-# package.json: "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\""
-RUN npm run build
-
-# ─── Стадия 2: production-образ ──────────────────────────────────────────────
-FROM node:22-alpine AS release
-
-WORKDIR /app
-
-COPY --from=builder /build/build        ./build
-COPY --from=builder /build/package.json ./package.json
-COPY --from=builder /build/package-lock.json ./package-lock.json
-
-# Только production-зависимости
-RUN npm ci --ignore-scripts --omit=dev
-
-ENV NODE_ENV=production
-
-# Upstream default: Streamable HTTP слушает на 3002
-EXPOSE 3002
-
-USER node
-
-ENTRYPOINT ["node", "build/index.js"]
-DOCKERFILE
-
-  log "Сборка образа ${BUILT_SOURCE_IMAGE_NAME} из исходников (npm ci + tsc)..."
-  docker build --no-cache -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
+  log "Сборка образа ${BUILT_SOURCE_IMAGE_NAME} из исходников (DOCKER_BUILDKIT=1)..."
+  log "Используется родной Dockerfile из репозитория zereight/gitlab-mcp"
+  DOCKER_BUILDKIT=1 docker build --no-cache -t "${BUILT_SOURCE_IMAGE_NAME}" "${BUILD_CTX}" \
     || error "Не удалось собрать образ ${BUILT_SOURCE_IMAGE_NAME}"
   rm -rf "${BUILD_CTX}"
   ok "Образ ${BUILT_SOURCE_IMAGE_NAME} собран локально (ref=${ACTUAL_REF}, все 50+ инструментов, без supergateway)"
