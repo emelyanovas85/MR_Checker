@@ -4,7 +4,6 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.tool.ToolCallbacks;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -74,7 +73,7 @@ public class GitLabReviewService {
                     .prompt()
                     .system(reviewPrompt)
                     .user(buildUserMessage(index, group, projectId, mrIid))
-                    .tools(ToolCallbacks.from(tools))
+                    .tools(tools)
                     .call()
                     .content();
 
