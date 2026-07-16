@@ -7,7 +7,6 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.client.RestClient;
 
 @Configuration
@@ -23,19 +22,12 @@ public class ClientConfig {
 
     /**
      * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
+     * Jackson-конвертер добавляется автоматически Spring Boot auto-configuration,
+     * поэтому явная настройка messageConverters не требуется.
      */
     @Bean
     public RestClient restClient(RestClient.Builder builder) {
-        return builder
-                .messageConverters(converters -> {
-                    // Убеждаемся что Jackson-конвертер есть — по умолчанию он присутствует
-                    boolean hasJackson = converters.stream()
-                            .anyMatch(c -> c instanceof MappingJackson2HttpMessageConverter);
-                    if (!hasJackson) {
-                        converters.add(new MappingJackson2HttpMessageConverter());
-                    }
-                })
-                .build();
+        return builder.build();
     }
 
     /**
