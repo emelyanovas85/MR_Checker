@@ -13,12 +13,32 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.util.Map;
 
 /**
- * Клиент для вызова GitLab MCP сервера (порт 8083).
- * Использует Streamable HTTP транспорт (POST /mcp).
+ * ⚠️ ВАРИАНТ Б — НЕ АКТИВЕН (резерв для GitLab-MCP flow).
  *
- * Конфигурация:
- *   MCP_GITLAB_URL — URL GitLab MCP сервера (default: http://10.1.5.97:8083)
- *   app.gitlab.token — токен авторизации GitLab
+ * <p>Этот компонент используется только через {@link GitLabToolsProvider} →
+ * {@link GitLabReviewService}, который <strong>не подключён</strong> к
+ * {@link MrReviewOrchestrator}. Активный Вариант А ({@link LlmReviewService})
+ * работает с {@link ClassContextToolsProvider} и не использует этот клиент.
+ *
+ * <p>HTTP-клиент для вызова GitLab MCP сервера через JSON-RPC over Streamable HTTP ({@code POST /mcp}).
+ *
+ * <h3>Методы, которые вызывает LLM через {@link GitLabToolsProvider}:</h3>
+ * <ul>
+ *   <li>{@link #createReviewSession} — инициирует сессию для MR</li>
+ *   <li>{@link #getStructureMarkdown} — структура изменённых файлов</li>
+ *   <li>{@link #getSourceFile} — полный исходник Java-класса</li>
+ *   <li>{@link #getSourceLinesGitlab} — конкретные строки кода</li>
+ *   <li>{@link #getMergeRequestFileDiff} — unified diff файла из MR</li>
+ *   <li>{@link #createMergeRequestThread} — создание inline-треда в коде MR ✨</li>
+ *   <li>{@link #terminateReviewSession} — завершение сессии</li>
+ * </ul>
+ *
+ * @see GitLabToolsProvider Spring AI @Tool-обёртки для этого клиента
+ * @see GitLabReviewService сервис ревью Варианта Б
+ *
+ * @implNote Конфигурация:
+ *   {@code MCP_GITLAB_URL} — URL GitLab MCP сервера (default: {@code http://10.1.5.97:8083}),
+ *   {@code app.gitlab.token} — токен авторизации GitLab
  */
 @Slf4j
 @Component

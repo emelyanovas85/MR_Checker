@@ -7,18 +7,30 @@ import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
 /**
- * Provider инструментов GitLab MCP для LLM-ревью.
+ * ⚠️ ВАРИАНТ Б — НЕ АКТИВЕН (резерв для GitLab-MCP flow).
  *
- * Каждый экземпляр создаётся per-review через ObjectProvider,
+ * <p>Этот компонент используется только в {@link GitLabReviewService},
+ * который <strong>не подключён</strong> к {@link MrReviewOrchestrator}.
+ * Активный provider инструментов — {@link ClassContextToolsProvider} (Вариант А).
+ *
+ * <p>Provider инструментов GitLab MCP для LLM-ревью.
+ * Каждый экземпляр создаётся per-review через {@code ObjectProvider} ({@code scope=prototype}),
  * что обеспечивает изолированный контекст на группу.
  *
- * LLM может использовать эти инструменты для:
- * - Создания/завершения сессии ревью (create_review_session, terminate_review_session)
- * - Получения структуры изменённых файлов (get_structure_markdown)
- * - Запроса полных исходников файлов (get_source_file)
- * - Запроса конкретных строк кода (get_source_lines_gitlab)
- * - Получения диффов файлов (get_merge_request_file_diff)
- * - Создания inline-тредов в коде (create_merge_request_thread)
+ * <h3>Инструменты, доступные LLM в Варианте Б:</h3>
+ * <ul>
+ *   <li>{@code createReviewSession} — создать сессию ревью (первый обязательный шаг)</li>
+ *   <li>{@code getStructureMarkdown} — получить структуру изменённых файлов</li>
+ *   <li>{@code getSourceFile} — получить полный исходник Java-файла</li>
+ *   <li>{@code getSourceLinesGitlab} — получить конкретные диапазоны строк</li>
+ *   <li>{@code getMergeRequestFileDiff} — получить unified diff файла из MR</li>
+ *   <li>{@code createMergeRequestThread} — создать inline-тред прямо в коде MR ✨</li>
+ *   <li>{@code terminateReviewSession} — завершить сессию, освободить ресурсы</li>
+ * </ul>
+ *
+ * @see GitLabReviewService сервис ревью Варианта Б, использующий этот provider
+ * @see GitLabMcpClient HTTP-клиент, которому делегируются все вызовы
+ * @see ClassContextToolsProvider активный аналог (Вариант А)
  */
 @Component
 @Scope("prototype")

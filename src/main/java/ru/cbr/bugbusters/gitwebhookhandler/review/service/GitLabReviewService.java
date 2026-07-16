@@ -15,17 +15,34 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Сервис LLM-ревью с полной интеграцией GitLab MCP инструментов (Вариант Б).
+ * ⚠️ ВАРИАНТ Б — НЕ АКТИВЕН (резерв для GitLab-MCP flow).
  *
- * Отличия от LlmReviewService:
- * - Использует GitLabToolsProvider вместо ClassContextToolsProvider
- * - Системный промпт gitlab-system-prompt.md с полным списком GitLab MCP инструментов
- * - Создаётся отдельная сессия ревью (create_review_session) для каждой группы
- * - LLM может создавать inline-треды в MR через create_merge_request_thread
- * - Получает диффы и структуру MR через GitLab MCP вместо java-class-context
+ * <p>Этот класс <strong>не подключён</strong> к {@link MrReviewOrchestrator}.
+ * Активный сервис ревью — {@link LlmReviewService} (Вариант А).
  *
- * Конфигурация:
- *   app.ai.gitlab-review-prompt-file — путь к системному промпту
+ * <p>Сервис LLM-ревью с полной интеграцией GitLab MCP инструментов.
+ *
+ * <h3>Отличия от активного LlmReviewService (Вариант А):</h3>
+ * <ul>
+ *   <li>Использует {@link GitLabToolsProvider} вместо {@link ClassContextToolsProvider}</li>
+ *   <li>Системный промпт {@code gitlab-system-prompt.md} с полным списком GitLab MCP инструментов</li>
+ *   <li>LLM сам создаёт сессию ревью через {@code createReviewSession} для каждой группы</li>
+ *   <li>LLM может создавать inline-треды в MR через {@code createMergeRequestThread}</li>
+ *   <li>Получает диффы и структуру MR через GitLab MCP вместо java-class-context (8084)</li>
+ * </ul>
+ *
+ * <h3>Чтобы активировать Вариант Б:</h3>
+ * <ol>
+ *   <li>Инжектировать этот класс в {@link MrReviewOrchestrator} вместо {@link LlmReviewService}</li>
+ *   <li>Убедиться, что GitLab MCP сервер доступен (переменная {@code MCP_GITLAB_URL})</li>
+ *   <li>Подготовить промпт {@code classpath:prompts/gitlab-system-prompt.md}</li>
+ * </ol>
+ *
+ * @see LlmReviewService активный аналог (Вариант А)
+ * @see GitLabToolsProvider инструменты для LLM в этом варианте
+ * @see GitLabMcpClient HTTP-клиент к GitLab MCP серверу
+ *
+ * @implNote Конфигурация: {@code app.ai.gitlab-review-prompt-file} — путь к системному промпту
  */
 @Slf4j
 @Service
