@@ -126,14 +126,13 @@ public class MrReviewOrchestrator {
                             () -> {
                                 GroupReviewResult result =
                                         llmReviewService.review(i, groups.get(i), finalSessionId);
-                                // Сохраняем ответ LLM по группе
                                 reviewAuditService.saveLlmMessage(
                                         finalRunId,
                                         LlmMessageEntity.Stage.REVIEW,
                                         i,
                                         result.success()
                                                 ? LlmMessageEntity.MessageRole.ASSISTANT
-                                                : LlmMessageEntity.MessageRole.ASSISTANT,
+                                                : LlmMessageEntity.MessageRole.ERROR,
                                         null,
                                         result.reviewText());
                                 return result;
