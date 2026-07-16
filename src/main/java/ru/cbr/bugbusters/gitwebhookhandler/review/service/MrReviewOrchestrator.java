@@ -126,13 +126,13 @@ public class MrReviewOrchestrator {
                             () -> {
                                 GroupReviewResult result =
                                         llmReviewService.review(i, groups.get(i), finalSessionId);
+                                // Роль всегда ASSISTANT: при failure reviewText уже содержит
+                                // "Error: ...", статус success отражён в поле result.success()
                                 reviewAuditService.saveLlmMessage(
                                         finalRunId,
                                         LlmMessageEntity.Stage.REVIEW,
                                         i,
-                                        result.success()
-                                                ? LlmMessageEntity.MessageRole.ASSISTANT
-                                                : LlmMessageEntity.MessageRole.ERROR,
+                                        LlmMessageEntity.MessageRole.ASSISTANT,
                                         null,
                                         result.reviewText());
                                 return result;
