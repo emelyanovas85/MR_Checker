@@ -1,14 +1,56 @@
-# Локальный профиль для разработки
-# H2 хранится в домашней директории разработчика
+# ======================================================
+# Локальный профиль для разработки (spring.profiles.active=local)
+# Файл находится в .gitignore — секреты не попадают в репозиторий.
+# Запуск без каких-либо ENV-переменных в IntelliJ.
+# ======================================================
+
 spring:
+  # H2 файловая БД в домашней директории разработчика
   datasource:
-    url: jdbc:h2:file:${H2_DB_PATH:${user.home}/.mr-checker/db/mr-checker};AUTO_SERVER=FALSE;DB_CLOSE_ON_EXIT=FALSE
+    url: jdbc:h2:file:${user.home}/.mr-checker/db/mr-checker;AUTO_SERVER=FALSE;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+
+  # H2 web-консоль: http://localhost:8081/h2-console
   h2:
     console:
       enabled: true
       path: /h2-console
 
-# Подключение из DBeaver / IntelliJ Database:
+  ai:
+    openai:
+      base-url: https://chat.ehd-zr.cbr.ru
+      api-key: Bearer sk-09fd660cdc8640ac861fe85a16d2d2f1
+      chat:
+        options:
+          model: Qwen/Qwen3.5-397B-A17B-GPTQ-Int4
+          temperature: 0.3
+        completions-path: /openai/chat/completions
+    mcp:
+      client:
+        connections:
+          gitlab-mcp:
+            url: http://10.1.5.97:8083
+          java-class-context:
+            url: http://10.1.5.97:8084
+
+webhook:
+  client:
+    server-url: http://10.1.5.97:8081
+
+app:
+  gitlab:
+    url: http://10.1.5.6/
+    token: Wg2zKVFW6ZogLt1D3dHQ
+  class-context:
+    url: http://10.1.5.97:8084
+    gitlab-token: Wg2zKVFW6ZogLt1D3dHQ
+
+h2:
+  tcp-server:
+    port: 9092
+
+# Подключение через DBeaver / IntelliJ Database:
 #   Тип:      H2 Server
 #   JDBC URL: jdbc:h2:tcp://localhost:9092/~/.mr-checker/db/mr-checker
 #   User:     sa
