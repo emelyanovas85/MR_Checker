@@ -4,74 +4,57 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import okhttp3.ConnectionSpec;
-import okhttp3.OkHttpClient;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.DependsOn;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.client.RestClient;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.security.KeyStore;
 import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Конфигурация HTTP-клиентов.
  *
- * ПРОБЛЕМА: Kaspersky TLS inspection proxy отклоняет TLS handshake
- * потому что OkHttp 4.12 по умолчанию предлагает только ECDHE cipher suites
- * (ConnectionSpec.MODERN_TLS). Корпоративный proxy требует RSA key exchange
- * (TLS_RSA_WITH_AES_256_GCM_SHA384 и подобные).
+ * ПРОБЛЕМА: Kaspersky TLS inspection proxy шлёт "fatal alert: handshake_failure".
  *
- * ДИАГНОСТИКА ИЗ ЛОГОВ:
- *   Caused by: javax.net.ssl.SSLHandshakeException: (handshake_failure)
- *   Received fatal alert: handshake_failure
- *   at okhttp3.internal.connection.RealConnection.connectTls
+ * ДИАГНОСТИКА: это не проблема доверия сертификату (PKIX path building failed было бы
+ * другой ошибкой). Это несовместимость cipher suites:
+ *   - Java 21 по умолчанию отключает старые RSA key exchange суиты
+ *     (TLS_RSA_WITH_AES_256_GCM_SHA384 и др.) в файле java.security
+ *   - OkHttp 4.12 MODERN_TLS также использует только ECDHE суиты
+ *   - Kaspersky proxy требует TLS_RSA_* для MITM-инспекции
  *
- * Это НЕ проблема доверия сертификату (иначе была бы PKIX path building failed).
- * Это несовместимость cipher suites.
+ * РЕШЕНИЕ:
+ * 1. OpenAiHttpClientBuilderCustomizer (официальный Spring AI 2.0 API) —
+ *    подменяет SSLSocketFactory внутри SpringAiOpenAiHttpClient.Builder
+ * 2. CorporateSslSocketFactory — обёртка вокруг стандартного SSLSocketFactory,
+ *    которая на каждом создании сокета добавляет RSA key exchange cipher suites
+ *    через SSLParameters (механизм без замены ConnectionSpec).
  *
- * РЕШЕНИЕ: OkHttpClient bean с connectionSpecs = [COMPATIBLE_TLS, CLEARTEXT]
- * COMPATIBLE_TLS включает TLS_RSA_* суиты наряду с ECDHE_RSA_*,
- * что позволяет Kaspersky proxy выбрать поддерживаемый шифр.
- *
- * Spring AI 2.0 подхватывает OkHttpClient bean из контекста автоматически
- * в SpringAiOpenAiHttpClient через @ConditionalOnMissingBean.
- *
- * ПРЕДВАРИТЕЛЬНОЕ УСЛОВИЕ: Kaspersky root CA должен быть в JVM cacerts:
+ * ПРЕДВАРИТЕЛьНОЕ УСЛОВИЕ: Kaspersky root CA должен быть в JVM cacerts:
  *   keytool -importcert -cacerts -alias kaspersky-root -file kaspersky.crt
  */
 @Configuration
 public class ClientConfig {
 
-    /**
-     * SSLContext с TrustManager из JVM cacerts (включая Kaspersky root).
-     * Используется явно в OkHttpClient — в отличие от SSLContext.setDefault(),
-     * который OkHttp игнорирует после инициализации клиента.
-     */
-    @Bean
-    public SSLContext corporateSslContext() throws Exception {
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(
-                TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init((KeyStore) null); // читает JVM cacerts
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tmf.getTrustManagers(), null);
-        return ctx;
-    }
+    // -------------------------------------------------------------------------
+    // SSL infrastructure
+    // -------------------------------------------------------------------------
 
-    /**
-     * X509TrustManager из JVM cacerts — требуется OkHttp для явной передачи
-     * вместе с SSLSocketFactory (иначе OkHttp выбрасывает IllegalStateException).
-     */
     @Bean
     public X509TrustManager corporateTrustManager() throws Exception {
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(
@@ -84,50 +67,126 @@ public class ClientConfig {
                 .orElseThrow(() -> new IllegalStateException("No X509TrustManager in cacerts"));
     }
 
-    /**
-     * OkHttpClient с COMPATIBLE_TLS — включает RSA key exchange cipher suites
-     * (TLS_RSA_WITH_AES_256_GCM_SHA384 и др.), которые требует Kaspersky proxy.
-     *
-     * Spring AI 2.0 (SpringAiOpenAiHttpClient) подхватывает этот бин
-     * автоматически через механизм кастомизации OkHttpClient в контексте.
-     *
-     * ConnectionSpec.COMPATIBLE_TLS vs MODERN_TLS:
-     *   MODERN_TLS   = только ECDHE_RSA + ECDHE_ECDSA (TLS 1.2/1.3)
-     *   COMPATIBLE_TLS = + TLS_RSA_WITH_AES_* (TLS 1.0-1.2) — нужно для корп. proxy
-     */
     @Bean
-    @DependsOn({"corporateSslContext", "corporateTrustManager"})
-    public OkHttpClient okHttpClient(SSLContext sslContext,
-                                     X509TrustManager trustManager) {
-        return new OkHttpClient.Builder()
-                .sslSocketFactory(sslContext.getSocketFactory(), trustManager)
-                .connectionSpecs(List.of(
-                        ConnectionSpec.COMPATIBLE_TLS,  // RSA + ECDHE cipher suites
-                        ConnectionSpec.CLEARTEXT         // для http:// эндпоинтов
-                ))
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
-                .build();
+    public SSLContext corporateSslContext(X509TrustManager trustManager) throws Exception {
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, new javax.net.ssl.TrustManager[]{trustManager}, null);
+        return ctx;
     }
 
     /**
-     * GitLabApi использует тот же OkHttpClient через DependsOn,
-     * чтобы TLS настройки применились до первого запроса к GitLab.
+     * SSLSocketFactory-обёртка, которая добавляет RSA key exchange cipher suites
+     * на каждый сокет. Java 21 имеет эти суиты в jdk.tls.client.cipherSuites,
+     * но они выключены через файл java.security. Через SSLParameters
+     * мы явно возвращаем их в переговор без изменения java.security.
+     */
+    static final class CorporateSslSocketFactory extends SSLSocketFactory {
+
+        private static final String[] CORPORATE_CIPHERS = {
+                // ECDHE (OkHttp MODERN_TLS) — оставляем
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                // RSA key exchange (Kaspersky proxy требует именно эти)
+                "TLS_RSA_WITH_AES_256_GCM_SHA384",
+                "TLS_RSA_WITH_AES_128_GCM_SHA256",
+                "TLS_RSA_WITH_AES_256_CBC_SHA256",
+                "TLS_RSA_WITH_AES_128_CBC_SHA256",
+                "TLS_RSA_WITH_AES_256_CBC_SHA",
+                "TLS_RSA_WITH_AES_128_CBC_SHA"
+        };
+
+        private final SSLSocketFactory delegate;
+
+        CorporateSslSocketFactory(SSLSocketFactory delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public String[] getDefaultCipherSuites() {
+            return CORPORATE_CIPHERS;
+        }
+
+        @Override
+        public String[] getSupportedCipherSuites() {
+            return CORPORATE_CIPHERS;
+        }
+
+        @Override
+        public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
+            return configure((SSLSocket) delegate.createSocket(s, host, port, autoClose));
+        }
+
+        @Override
+        public Socket createSocket(String host, int port) throws IOException {
+            return configure((SSLSocket) delegate.createSocket(host, port));
+        }
+
+        @Override
+        public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+            return configure((SSLSocket) delegate.createSocket(host, port, localHost, localPort));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress host, int port) throws IOException {
+            return configure((SSLSocket) delegate.createSocket(host, port));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort)
+                throws IOException {
+            return configure((SSLSocket) delegate.createSocket(address, port, localAddress, localPort));
+        }
+
+        /**
+         * Устанавливает на сокет SSLParameters с полным списком cipher suites,
+         * переопределяя запреты java.security для этого соединения.
+         */
+        private SSLSocket configure(SSLSocket socket) {
+            SSLParameters params = socket.getSSLParameters();
+            // Фильтруем: оставляем только те, которые реально поддерживает JVM
+            String[] supported = socket.getSupportedCipherSuites();
+            String[] enabled = Arrays.stream(CORPORATE_CIPHERS)
+                    .filter(c -> Arrays.asList(supported).contains(c))
+                    .toArray(String[]::new);
+            params.setCipherSuites(enabled);
+            socket.setSSLParameters(params);
+            return socket;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Spring AI 2.0 официальный hook для настройки OkHttp внутри Spring AI
+    // -------------------------------------------------------------------------
+
+    /**
+     * OpenAiHttpClientBuilderCustomizer — единственный правильный способ
+     * подменить OkHttp внутри SpringAiOpenAiHttpClient (Spring AI 2.0 API).
+     *
+     * Вызывается до сборки OkHttpClient для всех OpenAI *Model-бинов
+     * (chat, embedding, image, audio, moderation).
      */
     @Bean
-    @DependsOn("okHttpClient")
+    public OpenAiHttpClientBuilderCustomizer kasperkyTlsCustomizer(
+            SSLContext sslContext, X509TrustManager trustManager) {
+        return builder -> builder
+                .sslSocketFactory(new CorporateSslSocketFactory(sslContext.getSocketFactory()))
+                .trustManager(trustManager);
+    }
+
+    // -------------------------------------------------------------------------
+    // Остальные бины
+    // -------------------------------------------------------------------------
+
+    @Bean
     public GitLabApi gitLabApi(AppProperties properties) {
         GitLabApi api = new GitLabApi(properties.gitlab().url(), properties.gitlab().token());
         api.setRequestTimeout(5000, 30000);
         return api;
     }
 
-    /**
-     * RestClient для HTTP-запросов к java-class-context (порт 8084).
-     */
     @Bean
-    @DependsOn("okHttpClient")
     public RestClient restClient(AppProperties properties) {
         return RestClient.builder()
                 .baseUrl(properties.classContext().url())
