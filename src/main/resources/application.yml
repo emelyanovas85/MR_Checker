@@ -95,7 +95,7 @@ webhook:
   client:
     server-url: ${WEBHOOK_DISTRIBUTOR_URL:http://10.1.5.97:8081}
     subscriber-id: MR_Checker
-    source: gitlab
+    source: gitlabTest
     target-endpoint: gitlab.merge-request
     event-type-filter:
       - Merge Request Hook
