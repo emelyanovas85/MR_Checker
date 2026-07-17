@@ -11,12 +11,12 @@ import okhttp3.TlsVersion;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
-import org.springframework.ai.openai.api.OpenAiApi;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.client.OkHttp3ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -32,18 +32,6 @@ import java.util.concurrent.TimeUnit;
 
 @Configuration
 public class ClientConfig {
-
-    // Читается из spring.ai.openai.base-url / SPRING_AI_OPENAI_BASE_URL
-    @Value("${spring.ai.openai.base-url:https://chat.ehd-zr.cbr.ru}")
-    private String openAiBaseUrl;
-
-    // Читается из spring.ai.openai.api-key / SPRING_AI_OPENAI_API_KEY
-    @Value("${spring.ai.openai.api-key:}")
-    private String openAiApiKey;
-
-    // Читается из spring.ai.openai.chat.options.model
-    @Value("${spring.ai.openai.chat.options.model:gpt-4o}")
-    private String openAiModel;
 
     /**
      * GitLabApi для публикации комментариев в MR через gitlab4j.
@@ -81,16 +69,8 @@ public class ClientConfig {
 
     /**
      * OkHttpClient с SSLSocketFactory из корпоративного TrustStore.
-     *
-     * Spring AI 2.0 использует okhttp3 внутри SpringAiOpenAiHttpClient.
-     * Когда бин OpenAiApi определён в контексте, auto-configuration
-     * использует его вместо создания нового.
-     *
-     * ConnectionSpec.MODERN_TLS содержит:
-     *   TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-     *   TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-     *   TLS_RSA_WITH_AES_128_GCM_SHA256  (требуется Kaspersky inspection)
-     *   TLS_RSA_WITH_AES_256_GCM_SHA384  (требуется Kaspersky inspection)
+     * Используется как transport для Spring AI (через RestClientCustomizer)
+     * и для прямых HTTP-запросов.
      */
     @Bean
     public OkHttpClient okHttpClient(SSLContext sslContext, TrustManagerFactory tmf) {
@@ -112,54 +92,31 @@ public class ClientConfig {
     }
 
     /**
-     * OpenAiApi с кастомным OkHttpClient.
+     * RestClientCustomizer — перехватывает все бины RestClient.Builder в контексте,
+     * включая тот, что Spring AI использует внутри SpringAiOpenAiHttpClient.
      *
-     * Инжектируем OkHttpClient в SpringAiOpenAiHttpClient — именно здесь
-     * раньше происходил handshake_failure, т.к. Spring AI
-     * создавал собственный OkHttpClient без корпоративного SSLContext.
-     *
-     * baseUrl и apiKey читаются из spring.ai.openai.* properties
-     * (аналогично auto-configuration, но с нашим transport).
+     * Примечание: в Spring AI 2.0.0 внутренний HTTP-клиент перешёл на okhttp3,
+     * но создаётся через RestClient.Builder с OkHttp3ClientHttpRequestFactory.
+     * RestClientCustomizer — стандартный механизм Spring Boot для кастомизации
+     * всех бинов типа RestClient.Builder до их разрешения.
      */
     @Bean
-    public OpenAiApi openAiApi(OkHttpClient okHttpClient) {
-        return OpenAiApi.builder()
-                .baseUrl(openAiBaseUrl)
-                .apiKey(openAiApiKey)
-                .httpClient(okHttpClient)
-                .build();
+    public RestClientCustomizer restClientCustomizer(OkHttpClient okHttpClient) {
+        return builder -> builder.requestFactory(
+                new OkHttp3ClientHttpRequestFactory(okHttpClient));
     }
 
     /**
-     * JDK HttpClient для RestClient (запросы к java-class-context, порт 8084).
+     * JDK HttpClient для RestClient java-class-context (HTTP, порт 8084).
+     * Получает SSLContext на случай если endpoint перейдёт на HTTPS.
+     * Используем отдельный HttpClient чтобы не переписывать requestFactory
+     * у RestClientCustomizer (который затрагивает все бины Builder​-а).
      */
     @Bean
-    public HttpClient httpClient(SSLContext sslContext) throws Exception {
-        return HttpClient.newBuilder()
-                .sslContext(sslContext)
-                .connectTimeout(Duration.ofSeconds(10))
-                .version(HttpClient.Version.HTTP_1_1)
-                .build();
-    }
-
-    /**
-     * JdkClientHttpRequestFactory — адаптер поверх JDK HttpClient для RestClient.
-     */
-    @Bean
-    public JdkClientHttpRequestFactory jdkClientHttpRequestFactory(HttpClient httpClient) {
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
-        factory.setReadTimeout(Duration.ofSeconds(60));
-        return factory;
-    }
-
-    /**
-     * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
-     */
-    @Bean
-    public RestClient restClient(RestClient.Builder builder,
-                                 JdkClientHttpRequestFactory factory) {
-        return builder
-                .requestFactory(factory)
+    public RestClient restClient(AppProperties properties, OkHttpClient okHttpClient) {
+        return RestClient.builder()
+                .baseUrl(properties.classContext().url())
+                .requestFactory(new OkHttp3ClientHttpRequestFactory(okHttpClient))
                 .build();
     }
 
