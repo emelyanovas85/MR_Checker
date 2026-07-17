@@ -1,6 +1,5 @@
 package ru.cbr.bugbusters.gitwebhookhandler.common.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.CipherSuite;
 import okhttp3.ConnectionSpec;
 import okhttp3.OkHttpClient;
@@ -9,6 +8,7 @@ import okhttp3.TlsVersion;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
@@ -35,24 +35,24 @@ public class ClientConfig {
 
     /**
      * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
-     * Использует тот же OkHttpClient, чтобы работать через Kaspersky TLS inspection.
+     * Использует уже настроенный builder (с OkHttp transport через RestClientCustomizer).
      */
     @Bean
-    public RestClient restClient(RestClient.Builder builder, OkHttpClient okHttpClient) {
-        return builder
-                .requestFactory(new OkHttp3ClientHttpRequestFactory(okHttpClient))
-                .build();
+    public RestClient restClient(RestClient.Builder builder) {
+        return builder.build();
     }
 
     /**
-     * RestClient.Builder с OkHttp transport — подхватывается Spring AI OpenAI-клиентом
-     * автоматически через auto-configuration, что решает проблему TLS handshake
-     * при работе через корпоративный Kaspersky TLS inspection proxy.
+     * RestClientCustomizer — правильный Spring Boot-способ применить
+     * OkHttp transport ко всем RestClient.Builder в контексте — включая
+     * внутренний Spring AI OpenAI-клиент.
+     * Решает проблему TLS handshake через корпоративный Kaspersky TLS inspection proxy.
      */
     @Bean
-    public RestClient.Builder restClientBuilder(OkHttpClient okHttpClient) {
-        return RestClient.builder()
-                .requestFactory(new OkHttp3ClientHttpRequestFactory(okHttpClient));
+    public RestClientCustomizer okHttpRestClientCustomizer(OkHttpClient okHttpClient) {
+        return builder -> builder.requestFactory(
+                new OkHttp3ClientHttpRequestFactory(okHttpClient)
+        );
     }
 
     /**
