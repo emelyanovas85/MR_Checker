@@ -12,6 +12,7 @@ import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
@@ -32,6 +33,18 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 public class ClientConfig {
 
+    // Читается из spring.ai.openai.base-url / SPRING_AI_OPENAI_BASE_URL
+    @Value("${spring.ai.openai.base-url:https://chat.ehd-zr.cbr.ru}")
+    private String openAiBaseUrl;
+
+    // Читается из spring.ai.openai.api-key / SPRING_AI_OPENAI_API_KEY
+    @Value("${spring.ai.openai.api-key:}")
+    private String openAiApiKey;
+
+    // Читается из spring.ai.openai.chat.options.model
+    @Value("${spring.ai.openai.chat.options.model:gpt-4o}")
+    private String openAiModel;
+
     /**
      * GitLabApi для публикации комментариев в MR через gitlab4j.
      */
@@ -43,8 +56,8 @@ public class ClientConfig {
     }
 
     /**
-     * TrustManagerFactory, инициализированный из cacerts JVM.
-     * Корпоративный CA (Kaspersky root) должен быть там импортирован:
+     * TrustManagerFactory из JVM cacerts.
+     * Kaspersky root cert должен быть импортирован:
      *   keytool -importcert -cacerts -alias kaspersky-root -file kaspersky.crt
      */
     @Bean
@@ -56,8 +69,8 @@ public class ClientConfig {
     }
 
     /**
-     * SSLContext на базе корпоративного TrustStore.
-     * Используется как для OkHttpClient (Spring AI), так и для JDK HttpClient.
+     * SSLContext TLSv1.2 на базе корпоративного TrustStore.
+     * Общий для OkHttpClient (Spring AI) и JDK HttpClient (RestClient).
      */
     @Bean
     public SSLContext sslContext(TrustManagerFactory tmf) throws Exception {
@@ -67,17 +80,20 @@ public class ClientConfig {
     }
 
     /**
-     * OkHttpClient для Spring AI OpenAI-клиента.
-     * Spring AI 2.0 использует okhttp3 внутри SpringAiOpenAiHttpClient.
-     * Инжектируем SSLSocketFactory с корпоративным CA, чтобы
-     * TLS handshake проходил через Kaspersky TLS inspection proxy.
+     * OkHttpClient с SSLSocketFactory из корпоративного TrustStore.
      *
-     * TODO: удалить TLS_RSA_* suites (без forward secrecy), когда Kaspersky
-     *       inspection будет обновлён до ECDHE-compatible конфигурации.
+     * Spring AI 2.0 использует okhttp3 внутри SpringAiOpenAiHttpClient.
+     * Когда бин OpenAiApi определён в контексте, auto-configuration
+     * использует его вместо создания нового.
+     *
+     * ConnectionSpec.MODERN_TLS содержит:
+     *   TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+     *   TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+     *   TLS_RSA_WITH_AES_128_GCM_SHA256  (требуется Kaspersky inspection)
+     *   TLS_RSA_WITH_AES_256_GCM_SHA384  (требуется Kaspersky inspection)
      */
     @Bean
-    public OkHttpClient okHttpClient(SSLContext sslContext,
-                                     TrustManagerFactory tmf) {
+    public OkHttpClient okHttpClient(SSLContext sslContext, TrustManagerFactory tmf) {
         X509TrustManager trustManager = (X509TrustManager) tmf.getTrustManagers()[0];
         SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
 
@@ -96,21 +112,26 @@ public class ClientConfig {
     }
 
     /**
-     * OpenAiApi с кастомным OkHttpClient — подменяет внутренний HTTP-клиент
-     * Spring AI на тот, что проходит через Kaspersky TLS inspection.
+     * OpenAiApi с кастомным OkHttpClient.
+     *
+     * Инжектируем OkHttpClient в SpringAiOpenAiHttpClient — именно здесь
+     * раньше происходил handshake_failure, т.к. Spring AI
+     * создавал собственный OkHttpClient без корпоративного SSLContext.
+     *
+     * baseUrl и apiKey читаются из spring.ai.openai.* properties
+     * (аналогично auto-configuration, но с нашим transport).
      */
     @Bean
-    public OpenAiApi openAiApi(AppProperties properties, OkHttpClient okHttpClient) {
+    public OpenAiApi openAiApi(OkHttpClient okHttpClient) {
         return OpenAiApi.builder()
-                .baseUrl(properties.ai() != null ? System.getenv().getOrDefault("OPENAI_BASE_URL", "https://chat.ehd-zr.cbr.ru") : "https://chat.ehd-zr.cbr.ru")
-                .apiKey(System.getenv().getOrDefault("OPENAI_API_KEY", ""))
+                .baseUrl(openAiBaseUrl)
+                .apiKey(openAiApiKey)
                 .httpClient(okHttpClient)
                 .build();
     }
 
     /**
      * JDK HttpClient для RestClient (запросы к java-class-context, порт 8084).
-     * HTTP — без TLS, но используем тот же SSLContext если вдруг endpoint перейдёт на HTTPS.
      */
     @Bean
     public HttpClient httpClient(SSLContext sslContext) throws Exception {
@@ -143,10 +164,7 @@ public class ClientConfig {
     }
 
     /**
-     * ObjectMapper с настройками:
-     * - не падает на неизвестные поля
-     * - даты в ISO-8601
-     * - поддержка java.time.*
+     * ObjectMapper: ISO-8601 даты, java.time.*, не падает на неизвестные поля.
      */
     @Bean
     @Primary
@@ -159,7 +177,7 @@ public class ClientConfig {
 
     /**
      * ChatClient.Builder для создания изолированных ChatClient под каждую группу ревью.
-     * {@code @Lazy} позволяет стартовать без реального OPENAI_API_KEY.
+     * @Lazy позволяет стартовать без реального API key.
      */
     @Bean
     @Lazy
