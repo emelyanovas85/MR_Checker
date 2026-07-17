@@ -19,13 +19,13 @@ spring:
 
   ai:
     openai:
-      base-url: https://chat.ehd-zr.cbr.ru
-      api-key: Bearer sk-09fd660cdc8640ac861fe85a16d2d2f1
+      base-url: https://chat.ehd-zr.cbr.ru/openai
+      api-key: sk-09fd660cdc8640ac861fe85a16d2d2f1
       chat:
         options:
           model: Qwen/Qwen3.5-397B-A17B-GPTQ-Int4
           temperature: 0.3
-        completions-path: /openai/chat/completions
+#        completions-path: /chat/completions
     mcp:
       client:
         connections:
