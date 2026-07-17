@@ -30,8 +30,6 @@ public class ClientConfig {
 
     /**
      * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
-     * Jackson-конвертер добавляется автоматически Spring Boot auto-configuration,
-     * поэтому явная настройка messageConverters не требуется.
      */
     @Bean
     public RestClient restClient(RestClient.Builder builder) {
@@ -39,7 +37,7 @@ public class ClientConfig {
     }
 
     /**
-     * ObjectMapper для парсинга JSON-ответов LLM (группировка).
+     * ObjectMapper для парсинга JSON-ответов LLM.
      */
     @Bean
     public ObjectMapper objectMapper() {
@@ -49,7 +47,7 @@ public class ClientConfig {
     /**
      * OkHttpClient с явным TLS 1.2 и расширенным списком cipher suites.
      * Необходимо для работы через корпоративный Kaspersky TLS inspection,
-     * который выбирает TLS_RSA_WITH_AES_256_GCM_SHA384 (без ECDHE).
+     * который выбирает AES256-GCM-SHA384 без ECDHE.
      * HTTP/2 отключён — сервер не поддерживает ALPN h2.
      */
     @Bean
@@ -58,7 +56,7 @@ public class ClientConfig {
                 .tlsVersions(TlsVersion.TLS_1_2)
                 .cipherSuites(
                         // Kaspersky inspection выбирает именно этот suite (AES256-GCM-SHA384):
-                        CipherSuite.TLS_RSA_WITH_AES_256_GCM_SHA256,
+                        CipherSuite.TLS_RSA_WITH_AES_256_GCM_SHA384,
                         CipherSuite.TLS_RSA_WITH_AES_128_GCM_SHA256,
                         // ECDHE как запасные варианты:
                         CipherSuite.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -69,7 +67,6 @@ public class ClientConfig {
                 .build();
 
         return new OkHttpClient.Builder()
-                // Только HTTP/1.1 — убирает ALPN h2, который сервер не принимает
                 .protocols(Collections.singletonList(Protocol.HTTP_1_1))
                 .connectionSpecs(List.of(spec))
                 .build();
