@@ -4,9 +4,14 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import okhttp3.ConnectionSpec;
+import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
+import okhttp3.TlsVersion;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
@@ -15,10 +20,14 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import java.net.http.HttpClient;
 import java.security.KeyStore;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 
 @Configuration
 public class ClientConfig {
@@ -34,20 +43,77 @@ public class ClientConfig {
     }
 
     /**
-     * JDK HttpClient с корпоративным SSLContext.
-     * Использует системный TrustStore JVM (cacerts) — корпоративный CA
-     * (Kaspersky root cert) должен быть импортирован туда через
-     * keytool -importcert или -Djavax.net.ssl.trustStore.
+     * TrustManagerFactory, инициализированный из cacerts JVM.
+     * Корпоративный CA (Kaspersky root) должен быть там импортирован:
+     *   keytool -importcert -cacerts -alias kaspersky-root -file kaspersky.crt
      */
     @Bean
-    public HttpClient httpClient() throws Exception {
+    public TrustManagerFactory trustManagerFactory() throws Exception {
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(
                 TrustManagerFactory.getDefaultAlgorithm());
         tmf.init((KeyStore) null);
+        return tmf;
+    }
 
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, tmf.getTrustManagers(), null);
+    /**
+     * SSLContext на базе корпоративного TrustStore.
+     * Используется как для OkHttpClient (Spring AI), так и для JDK HttpClient.
+     */
+    @Bean
+    public SSLContext sslContext(TrustManagerFactory tmf) throws Exception {
+        SSLContext ctx = SSLContext.getInstance("TLSv1.2");
+        ctx.init(null, tmf.getTrustManagers(), null);
+        return ctx;
+    }
 
+    /**
+     * OkHttpClient для Spring AI OpenAI-клиента.
+     * Spring AI 2.0 использует okhttp3 внутри SpringAiOpenAiHttpClient.
+     * Инжектируем SSLSocketFactory с корпоративным CA, чтобы
+     * TLS handshake проходил через Kaspersky TLS inspection proxy.
+     *
+     * TODO: удалить TLS_RSA_* suites (без forward secrecy), когда Kaspersky
+     *       inspection будет обновлён до ECDHE-compatible конфигурации.
+     */
+    @Bean
+    public OkHttpClient okHttpClient(SSLContext sslContext,
+                                     TrustManagerFactory tmf) {
+        X509TrustManager trustManager = (X509TrustManager) tmf.getTrustManagers()[0];
+        SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
+
+        ConnectionSpec spec = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+                .tlsVersions(TlsVersion.TLS_1_2)
+                .build();
+
+        return new OkHttpClient.Builder()
+                .sslSocketFactory(sslSocketFactory, trustManager)
+                .protocols(Collections.singletonList(Protocol.HTTP_1_1))
+                .connectionSpecs(Collections.singletonList(spec))
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build();
+    }
+
+    /**
+     * OpenAiApi с кастомным OkHttpClient — подменяет внутренний HTTP-клиент
+     * Spring AI на тот, что проходит через Kaspersky TLS inspection.
+     */
+    @Bean
+    public OpenAiApi openAiApi(AppProperties properties, OkHttpClient okHttpClient) {
+        return OpenAiApi.builder()
+                .baseUrl(properties.ai() != null ? System.getenv().getOrDefault("OPENAI_BASE_URL", "https://chat.ehd-zr.cbr.ru") : "https://chat.ehd-zr.cbr.ru")
+                .apiKey(System.getenv().getOrDefault("OPENAI_API_KEY", ""))
+                .httpClient(okHttpClient)
+                .build();
+    }
+
+    /**
+     * JDK HttpClient для RestClient (запросы к java-class-context, порт 8084).
+     * HTTP — без TLS, но используем тот же SSLContext если вдруг endpoint перейдёт на HTTPS.
+     */
+    @Bean
+    public HttpClient httpClient(SSLContext sslContext) throws Exception {
         return HttpClient.newBuilder()
                 .sslContext(sslContext)
                 .connectTimeout(Duration.ofSeconds(10))
@@ -56,8 +122,7 @@ public class ClientConfig {
     }
 
     /**
-     * JdkClientHttpRequestFactory — Spring Framework 7.x адаптер поверх JDK HttpClient.
-     * Используется как transport для RestClient и Spring AI OpenAI-клиента.
+     * JdkClientHttpRequestFactory — адаптер поверх JDK HttpClient для RestClient.
      */
     @Bean
     public JdkClientHttpRequestFactory jdkClientHttpRequestFactory(HttpClient httpClient) {
@@ -78,13 +143,10 @@ public class ClientConfig {
     }
 
     /**
-     * ObjectMapper с настройками по умолчанию:
-     * - не падает на неизвестные поля (FAIL_ON_UNKNOWN_PROPERTIES = false)
-     * - сериализует даты в ISO-8601 (не в timestamp)
-     * - поддерживает java.time.* через JavaTimeModule
-     *
-     * {@code @Primary} обязателен, т.к. Spring Boot 4.x может также
-     * регистрировать свой ObjectMapper через JacksonAutoConfiguration.
+     * ObjectMapper с настройками:
+     * - не падает на неизвестные поля
+     * - даты в ISO-8601
+     * - поддержка java.time.*
      */
     @Bean
     @Primary
