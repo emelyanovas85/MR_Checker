@@ -1,23 +1,19 @@
 package ru.cbr.bugbusters.gitwebhookhandler.common.config;
 
-import okhttp3.CipherSuite;
-import okhttp3.ConnectionSpec;
-import okhttp3.OkHttpClient;
-import okhttp3.Protocol;
-import okhttp3.TlsVersion;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
-import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.http.client.OkHttp3ClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.net.http.HttpClient;
+import java.security.KeyStore;
+import java.time.Duration;
 
 @Configuration
 public class ClientConfig {
@@ -34,59 +30,47 @@ public class ClientConfig {
     }
 
     /**
-     * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
-     * Использует уже настроенный builder (с OkHttp transport через RestClientCustomizer).
+     * JDK HttpClient с корпоративным SSLContext.
+     * Использует системный TrustStore JVM — там должн лежать
+     * корпоративный CA (Kaspersky root cert), добавленный через
+     * -Djavax.net.ssl.trustStore или импорт в cacerts JVM.
      */
     @Bean
-    public RestClient restClient(RestClient.Builder builder) {
-        return builder.build();
-    }
+    public HttpClient httpClient() throws Exception {
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+                TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init((KeyStore) null); // загружает cacerts JVM
 
-    /**
-     * RestClientCustomizer — правильный Spring Boot-способ применить
-     * OkHttp transport ко всем RestClient.Builder в контексте — включая
-     * внутренний Spring AI OpenAI-клиент.
-     * Решает проблему TLS handshake через корпоративный Kaspersky TLS inspection proxy.
-     */
-    @Bean
-    public RestClientCustomizer okHttpRestClientCustomizer(OkHttpClient okHttpClient) {
-        return builder -> builder.requestFactory(
-                new OkHttp3ClientHttpRequestFactory(okHttpClient)
-        );
-    }
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, tmf.getTrustManagers(), null);
 
-    /**
-     * OkHttpClient с явным TLS 1.2 и расширенным списком cipher suites.
-     * Необходимо для работы через корпоративный Kaspersky TLS inspection,
-     * который выбирает AES256-GCM-SHA384 без ECDHE.
-     * HTTP/2 отключён — сервер не поддерживает ALPN h2.
-     *
-     * TODO: убрать TLS_RSA_* suites (без forward secrecy), когда Kaspersky
-     *       inspection будет обновлён до ECDHE-compatible конфигурации.
-     */
-    @Bean
-    public OkHttpClient okHttpClient() {
-        ConnectionSpec spec = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
-                .tlsVersions(TlsVersion.TLS_1_2)
-                .cipherSuites(
-                        // Kaspersky inspection выбирает именно этот suite (AES256-GCM-SHA384):
-                        // TODO: удалить после обновления Kaspersky — нет forward secrecy
-                        CipherSuite.TLS_RSA_WITH_AES_256_GCM_SHA384,
-                        CipherSuite.TLS_RSA_WITH_AES_128_GCM_SHA256,
-                        // ECDHE как предпочтительные варианты (forward secrecy):
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-                )
+        return HttpClient.newBuilder()
+                .sslContext(sslContext)
+                .connectTimeout(Duration.ofSeconds(10))
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
+    }
 
-        return new OkHttpClient.Builder()
-                .protocols(Collections.singletonList(Protocol.HTTP_1_1))
-                .connectionSpecs(List.of(spec))
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
+    /**
+     * JdkClientHttpRequestFactory — Spring Framework 7.x адаптер поверх JDK HttpClient.
+     * Используется как транспорт для всех RestClient в контексте,
+     * включая внутренний Spring AI OpenAI-клиент.
+     */
+    @Bean
+    public JdkClientHttpRequestFactory jdkClientHttpRequestFactory(HttpClient httpClient) {
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(60));
+        return factory;
+    }
+
+    /**
+     * RestClient для HTTP-запросов к сервису java-class-context (порт 8084).
+     */
+    @Bean
+    public RestClient restClient(RestClient.Builder builder,
+                                 JdkClientHttpRequestFactory factory) {
+        return builder
+                .requestFactory(factory)
                 .build();
     }
 
