@@ -37,13 +37,19 @@ spring:
 
   ai:
     openai:
-      base-url: ${OPENAI_BASE_URL:https://chat.ehd-zr.cbr.ru}
+      # openai-java-core 4.x не читает completions-path из Spring-конфигурации —
+      # он жёстко добавляет /v1/chat/completions к base-url.
+      # Поэтому кастомный префикс пути (/openai) включаем прямо в base-url,
+      # итоговый URL запроса: <base-url>/v1/chat/completions
+      # Пример: https://chat.ehd-zr.cbr.ru/openai/v1/chat/completions
+      base-url: ${OPENAI_BASE_URL:https://chat.ehd-zr.cbr.ru/openai}
       api-key: ${OPENAI_API_KEY:Bearer sk-09fd660cdc8640ac861fe85a16d2d2f1}
       chat:
         options:
           model: ${OPENAI_MODEL:Qwen/Qwen3.5-397B-A17B-GPTQ-Int4}
           temperature: 0.3
-        completions-path: ${OPENAI_COMPLETIONS_PATH:/openai/chat/completions}
+        # completions-path убран: openai-java-core 4.x игнорирует это свойство
+        # и всегда дописывает /v1/chat/completions к base-url самостоятельно.
 
     # ─────────────────────────────────────────────
     # MCP-клиент: подключение к внешним MCP-серверам по Streamable HTTP.
