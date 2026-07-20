@@ -5,6 +5,10 @@
 # ======================================================
 
 spring:
+  http:
+    client:
+      connect-timeout: 30s
+      read-timeout: 600s
   # H2 файловая БД в домашней директории разработчика
   datasource:
     url: jdbc:h2:file:${user.home}/.mr-checker/db/mr-checker;AUTO_SERVER=FALSE;DB_CLOSE_ON_EXIT=FALSE
@@ -23,7 +27,7 @@ spring:
       api-key: sk-09fd660cdc8640ac861fe85a16d2d2f1
       chat:
         options:
-          timeout: 600s
+          timeout: 600s # удалить если поможет таймаут клиента http
           model: Qwen/Qwen3.5-397B-A17B-GPTQ-Int4
           temperature: 0.3
 #        completions-path: /chat/completions
