@@ -4,14 +4,20 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import okhttp3.OkHttpClient;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.client.RestClient;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Конфигурация HTTP-клиентов.
@@ -30,9 +36,39 @@ import org.springframework.web.client.RestClient;
  *    Eclipse Temurin 21 добавляет TLS_RSA_* в disabledAlgorithms
  *    (жёстче чем Oracle JDK). Корпоративный сервер требует
  *    TLS_RSA_WITH_AES_256_GCM_SHA384 (RSA key exchange, TLS 1.2).
+ *
+ * Таймаут OpenAI:
+ *    spring.ai.openai.http-client не влияет на OkHttp внутри openai-java SDK.
+ *    Таймаут задаётся явно через бин OpenAiApi с кастомным OkHttpClient.
  */
 @Configuration
 public class ClientConfig {
+
+    /**
+     * Переопределяет авто-конфигурацию Spring AI для OpenAiApi.
+     * Устанавливает увеличенные таймауты OkHttp для длинных LLM-запросов
+     * с tool calling (модель может думать 5-10+ минут).
+     */
+    @Bean
+    public OpenAiApi openAiApi(
+            @Value("${spring.ai.openai.base-url}") String baseUrl,
+            @Value("${spring.ai.openai.api-key}") String apiKey) {
+
+        OkHttpClient httpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(5, TimeUnit.MINUTES)
+                .readTimeout(10, TimeUnit.MINUTES)
+                .callTimeout(15, TimeUnit.MINUTES)
+                .build();
+
+        return OpenAiApi.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey)
+                .httpClient(SpringAiOpenAiHttpClient.builder()
+                        .okHttpClient(httpClient)
+                        .build())
+                .build();
+    }
 
     @Bean
     public GitLabApi gitLabApi(AppProperties properties) {
