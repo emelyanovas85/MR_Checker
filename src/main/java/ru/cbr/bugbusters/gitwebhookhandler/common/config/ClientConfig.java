@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import okhttp3.OkHttpClient;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -15,7 +14,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.client.RestClient;
 
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 /**
  * Конфигурация HTTP-клиентов.
@@ -36,25 +35,21 @@ import java.util.concurrent.TimeUnit;
  *    TLS_RSA_WITH_AES_256_GCM_SHA384 (RSA key exchange, TLS 1.2).
  *
  * Таймаут OpenAI:
- *    OpenAiHttpClientBuilderCustomizer — официальный SPI Spring AI 2.0.0
- *    для кастомизации OkHttpClient внутри SpringAiOpenAiHttpClient.
- *    Подхватывается автоконфигурацией автоматически.
+ *    SpringAiOpenAiHttpClient.Builder не имеет отдельных connectTimeout/readTimeout.
+ *    Единственный доступный метод — .timeout(Duration), который
+ *    устанавливает общий call timeout на весь OkHttp-запрос.
  */
 @Configuration
 public class ClientConfig {
 
     /**
-     * Кастомизатор OkHttp для OpenAI — официальный SPI Spring AI 2.0.0.
-     * Увеличивает таймауты для длинных LLM-запросов с tool calling
-     * (модель может думать 5-10+ минут).
+     * Увеличивает общий таймаут OpenAI-запроса до 15 минут.
+     * SpringAiOpenAiHttpClient.Builder предоставляет единственный метод .timeout(Duration)
+     * (отдельных connect/read/write таймаутов нет).
      */
     @Bean
     public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer() {
-        return builder -> builder
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .writeTimeout(5, TimeUnit.MINUTES)
-                .readTimeout(10, TimeUnit.MINUTES)
-                .callTimeout(15, TimeUnit.MINUTES);
+        return builder -> builder.timeout(Duration.ofMinutes(15));
     }
 
     @Bean
