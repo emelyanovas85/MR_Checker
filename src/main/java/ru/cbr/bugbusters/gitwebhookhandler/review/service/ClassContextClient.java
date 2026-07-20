@@ -117,12 +117,6 @@ public class ClassContextClient {
     public void deleteSession(String sessionId) {
         String url = appProperties.classContext().url() + "/api/review-sessions";
         try {
-            restClient.delete()
-                    .uri(url)
-                    .header("Content-Type", "application/json")
-                    .retrieve()
-                    .toBodilessEntity();
-            // DELETE с телом через RestClient — используем exchange
             restClient.method(org.springframework.http.HttpMethod.DELETE)
                     .uri(url)
                     .body(new SessionIdRequest(sessionId))
