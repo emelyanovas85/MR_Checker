@@ -133,3 +133,22 @@ app:
   ai:
     grouping-prompt-file: ${APP_AI_GROUPING_PROMPT_FILE:classpath:prompts/grouping-prompt.md}
     review-prompt-file: ${APP_AI_REVIEW_PROMPT_FILE:classpath:prompts/system-prompt.md}
+    # ─────────────────────────────────────────────────────────────────────────
+    # Защита от prompt bloat и timeout при ревью больших MR.
+    # Все значения можно переопределить через переменные окружения.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Максимальное число одновременных LLM-вызовов ревью (Semaphore).
+    # Уменьши до 1 если модель нестабильна под нагрузкой.
+    max-concurrent-reviews: ${APP_AI_MAX_CONCURRENT_REVIEWS:2}
+
+    context-limit:
+      # Максимум символов на один source-файл / ответ getSourceFile|getSourceLines.
+      # 12000 ≈ 150–250 строк Java-кода.
+      # Переопределение: APP_AI_CONTEXT_LIMIT_MAX_FILE_CHARS=8000
+      max-file-chars: ${APP_AI_CONTEXT_LIMIT_MAX_FILE_CHARS:12000}
+
+      # Максимум символов на весь user-message одной review-группы.
+      # 30000 ≈ 600–800 строк с учётом метаданных группы.
+      # Переопределение: APP_AI_CONTEXT_LIMIT_MAX_TOTAL_CHARS=20000
+      max-total-chars: ${APP_AI_CONTEXT_LIMIT_MAX_TOTAL_CHARS:30000}
