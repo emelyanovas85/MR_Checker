@@ -26,6 +26,9 @@ import java.util.regex.Pattern;
  *
  * <p>Перед каждым вызовом LLM применяется глобальный rate-limit через
  * инжектируемый {@link LlmRateLimiter#acquire()} (0,45 req/s ≈ 2,2с между вызовами).
+ *
+ * <p>Размер user-сообщения ограничивается через {@link ContextLimiter} —
+ * суммарный объём файловых контекстов не превышает {@code app.ai.grouping-max-total-chars}.
  */
 @Slf4j
 @Service
@@ -35,9 +38,13 @@ public class LlmGroupingService {
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectMapper objectMapper;
     private final LlmRateLimiter rateLimiter;
+    private final ContextLimiter contextLimiter;
 
     @Value("${app.ai.grouping-prompt-file:classpath:prompts/grouping-prompt.md}")
     private Resource groupingPromptResource;
+
+    @Value("${app.ai.grouping-max-total-chars:20000}")
+    private int maxTotalChars;
 
     private String groupingPrompt;
 
@@ -45,6 +52,7 @@ public class LlmGroupingService {
     void loadPrompt() throws IOException {
         groupingPrompt = groupingPromptResource.getContentAsString(StandardCharsets.UTF_8);
         log.info("Grouping prompt загружен из: {}", groupingPromptResource.getDescription());
+        log.info("LlmGroupingService: maxTotalChars={}", maxTotalChars);
     }
 
     /**
@@ -59,8 +67,15 @@ public class LlmGroupingService {
             return List.of();
         }
 
-        String userMessage = buildUserMessage(fileStructures);
-        log.info("Запускаем LLM группировку для {} файлов", fileStructures.size());
+        List<String> limited = contextLimiter.limit(fileStructures, maxTotalChars);
+        if (limited.size() < fileStructures.size()) {
+            log.warn("LlmGroupingService: контекст обрезан с {} до {} файлов (лимит {} символов)",
+                    fileStructures.size(), limited.size(), maxTotalChars);
+        }
+
+        String userMessage = buildUserMessage(limited);
+        log.info("Запускаем LLM группировку для {} файлов (userMessage={} символов)",
+                limited.size(), userMessage.length());
 
         try {
             rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
