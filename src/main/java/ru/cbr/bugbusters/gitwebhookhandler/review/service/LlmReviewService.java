@@ -13,6 +13,8 @@ import ru.cbr.bugbusters.gitwebhookhandler.review.domain.RefactoringGroup;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Второй этап ревью: LLM анализирует одну группу рефакторинга.
@@ -20,14 +22,24 @@ import java.nio.charset.StandardCharsets;
  * <p>Каждый вызов создаёт изолированный ChatClient с тулами сервиса 8084:
  * LLM может запрашивать исходный код через {@link ClassContextToolsProvider}.
  *
- * <p>Перед вызовом LLM применяется глобальный rate-limit через
- * инжектируемый {@link LlmRateLimiter#acquire()} (0,45 req/s ≈ 2,2с между вызовами).
- * Rate-limit общий для всех LLM-вызовов в приложении (группировка + ревью).
+ * <h3>Защита от timeout и перегрузки</h3>
+ * <ol>
+ *   <li><b>RateLimiter</b> ({@link LlmRateLimiter}): сглаживает частоту старта запросов
+ *       (~2,2 с между вызовами). Общий для всех LLM-вызовов приложения.</li>
+ *   <li><b>Semaphore</b> (concurrency cap): не более
+ *       {@code app.ai.max-concurrent-reviews} одновременных LLM-вызовов ревью.
+ *       Предотвращает ситуацию, когда все потоки висят в долгих OpenAI-запросах.
+ *       По умолчанию — {@value #DEFAULT_MAX_CONCURRENT} слота.</li>
+ *   <li><b>Context truncation</b>: user-message обрезается до
+ *       {@code app.ai.context-limit.max-total-chars} символов ({@link ContextLimiter}).
+ *       Ответы tool calls обрезаются на уровне {@link ClassContextToolsProvider}.</li>
+ * </ol>
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class LlmReviewService {
+
+    private static final int DEFAULT_MAX_CONCURRENT = 2;
 
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectProvider<ClassContextToolsProvider> toolsProviderFactory;
@@ -36,12 +48,31 @@ public class LlmReviewService {
     @Value("${app.ai.review-prompt-file:classpath:prompts/system-prompt.md}")
     private Resource reviewPromptResource;
 
+    @Value("${app.ai.max-concurrent-reviews:" + DEFAULT_MAX_CONCURRENT + "}")
+    private int maxConcurrentReviews;
+
+    @Value("${app.ai.context-limit.max-total-chars:" + ContextLimiter.DEFAULT_MAX_TOTAL_CHARS + "}")
+    private int maxTotalChars;
+
+    /** Инициализируется в {@link #init()} после чтения конфига. */
+    private Semaphore concurrencyLimiter;
     private String reviewPrompt;
 
+    public LlmReviewService(ChatClient.Builder chatClientBuilder,
+                            ObjectProvider<ClassContextToolsProvider> toolsProviderFactory,
+                            LlmRateLimiter rateLimiter) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.toolsProviderFactory = toolsProviderFactory;
+        this.rateLimiter = rateLimiter;
+    }
+
     @PostConstruct
-    void loadPrompt() throws IOException {
+    void init() throws IOException {
         reviewPrompt = reviewPromptResource.getContentAsString(StandardCharsets.UTF_8);
         log.info("Review prompt загружен из: {}", reviewPromptResource.getDescription());
+        concurrencyLimiter = new Semaphore(maxConcurrentReviews, true);
+        log.info("LlmReviewService: concurrency cap={}, maxTotalChars={}",
+                maxConcurrentReviews, maxTotalChars);
     }
 
     /**
@@ -54,23 +85,48 @@ public class LlmReviewService {
      */
     public GroupReviewResult review(int index, RefactoringGroup group, String sessionId) {
         String groupName = group.groupName() != null ? group.groupName() : "Group #" + (index + 1);
+        boolean acquired = false;
         try {
+            // Concurrency cap: не более maxConcurrentReviews одновременных LLM-запросов ревью.
+            // tryAcquire с таймаутом вместо бесконечного acquire() — избегаем вечной очереди.
+            acquired = concurrencyLimiter.tryAcquire(90, TimeUnit.SECONDS);
+            if (!acquired) {
+                log.warn("[Review] concurrency cap exceeded, skipping group '{}' (index={})",
+                        groupName, index);
+                return GroupReviewResult.failure(index, groupName,
+                        "Skipped: concurrency cap exceeded (max " + maxConcurrentReviews + " concurrent reviews)");
+            }
+
             ClassContextToolsProvider tools = toolsProviderFactory.getObject().withSession(sessionId);
 
             rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
+
+            String userMessage = ContextLimiter.truncateTotal(buildUserMessage(index, group), maxTotalChars);
+            if (userMessage.endsWith(ContextLimiter.TRUNCATION_MARKER + "")) {
+                log.info("[Review] user-message truncated for group '{}' to {} chars", groupName, maxTotalChars);
+            }
+
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(reviewPrompt)
-                    .user(buildUserMessage(index, group))
+                    .user(userMessage)
                     .tools(tools)
                     .call()
                     .content();
 
             String result = (response == null || response.isBlank()) ? "No issues found." : response;
             return GroupReviewResult.success(index, groupName, result);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("[Review] interrupted waiting for semaphore, group '{}' (index={})", groupName, index, e);
+            return GroupReviewResult.failure(index, groupName, "Interrupted while waiting for concurrency slot");
         } catch (Exception e) {
             log.error("Ошибка LLM-ревью для группы '{}' (index={})", groupName, index, e);
             return GroupReviewResult.failure(index, groupName, e.getMessage());
+        } finally {
+            if (acquired) {
+                concurrencyLimiter.release();
+            }
         }
     }
 

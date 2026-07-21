@@ -3,6 +3,7 @@ package ru.cbr.bugbusters.gitwebhookhandler.review.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -15,6 +16,10 @@ import java.util.List;
  *
  * <p>Каждый экземпляр создаётся под конкретный сеанс ревью ({@code scope=prototype})
  * и привязан к конкретному {@code sessionId} сессии 8084.
+ *
+ * <p>Ответы тулов автоматически обрезаются до {@code app.ai.context-limit.max-file-chars}
+ * символов (дефолт: {@value ContextLimiter#DEFAULT_MAX_FILE_CHARS}), чтобы предотвратить
+ * prompt bloat и timeout при работе с большими файлами.
  *
  * <p>LLM может вызывать тулы для получения исходного кода:
  * <ul>
@@ -30,6 +35,9 @@ public class ClassContextToolsProvider {
     private final RestClient restClient;
     private final AppProperties appProperties;
     private String sessionId;
+
+    @Value("${app.ai.context-limit.max-file-chars:" + ContextLimiter.DEFAULT_MAX_FILE_CHARS + "}")
+    private int maxFileChars;
 
     public ClassContextToolsProvider(RestClient restClient, AppProperties appProperties) {
         this.restClient = restClient;
@@ -68,11 +76,17 @@ public class ClassContextToolsProvider {
                     new SessionRef(sessionId),
                     List.of(new ClassLines(qualifiedName, "main", rows))
             );
-            return restClient.post()
+            String raw = restClient.post()
                     .uri(url)
                     .body(request)
                     .retrieve()
                     .body(String.class);
+            String truncated = ContextLimiter.truncateFile(raw, maxFileChars);
+            if (raw != null && raw.length() > maxFileChars) {
+                log.info("[Tool] getSourceLines truncated: class={} {}→{} chars",
+                        qualifiedName, raw.length(), maxFileChars);
+            }
+            return truncated;
         } catch (Exception e) {
             log.warn("[Tool] getSourceLines failed: class={}, error={}", qualifiedName, e.getMessage());
             return "Не удалось получить строки для класса: " + qualifiedName + ". Ошибка: " + e.getMessage();
@@ -96,11 +110,17 @@ public class ClassContextToolsProvider {
         String url = appProperties.classContext().url() + "/api/source-file";
         try {
             SourceFileRequest request = new SourceFileRequest(sessionId, List.of(className));
-            return restClient.post()
+            String raw = restClient.post()
                     .uri(url)
                     .body(request)
                     .retrieve()
                     .body(String.class);
+            String truncated = ContextLimiter.truncateFile(raw, maxFileChars);
+            if (raw != null && raw.length() > maxFileChars) {
+                log.info("[Tool] getSourceFile truncated: class={} {}→{} chars",
+                        className, raw.length(), maxFileChars);
+            }
+            return truncated;
         } catch (Exception e) {
             log.warn("[Tool] getSourceFile failed: class={}, error={}", className, e.getMessage());
             return "Не удалось получить исходник для класса: " + className + ". Ошибка: " + e.getMessage();
