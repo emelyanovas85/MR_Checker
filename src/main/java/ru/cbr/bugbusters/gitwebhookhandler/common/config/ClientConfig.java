@@ -35,21 +35,25 @@ import java.time.Duration;
  *    TLS_RSA_WITH_AES_256_GCM_SHA384 (RSA key exchange, TLS 1.2).
  *
  * Таймаут OpenAI:
- *    SpringAiOpenAiHttpClient.Builder не имеет отдельных connectTimeout/readTimeout.
- *    Единственный доступный метод — .timeout(Duration), который
- *    устанавливает общий call timeout на весь OkHttp-запрос.
+ *    SpringAiOpenAiHttpClient.Builder предоставляет метод .timeout(Duration),
+ *    который устанавливает общий callTimeout OkHttp поверх OkHttpClient-бина.
+ *    Передаём Duration.ZERO чтобы снять ограничение: конкретные connect/read/write
+ *    таймауты управляются через OkHttpClient bean в OpenAiHttpClientConfig.
  */
 @Configuration
 public class ClientConfig {
 
     /**
-     * Увеличивает общий таймаут OpenAI-запроса до 15 минут.
-     * SpringAiOpenAiHttpClient.Builder предоставляет единственный метод .timeout(Duration)
-     * (отдельных connect/read/write таймаутов нет).
+     * Явно отключает callTimeout на уровне SpringAiOpenAiHttpClient.Builder.
+     *
+     * <p>Без этого бина Spring AI применяет дефолт openai-java-core (240s),
+     * который убивает длинные LLM-вызовы (группировка, tool-calling цепочки).
+     * Duration.ZERO = OkHttp callTimeout(0) = без общего лимита на весь call.
+     * Конкретные connect/read/write таймауты задаются в {@link OpenAiHttpClientConfig}.
      */
     @Bean
     public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer() {
-        return builder -> builder.timeout(Duration.ofMinutes(15));
+        return builder -> builder.timeout(Duration.ZERO);
     }
 
     @Bean
