@@ -1,7 +1,6 @@
 package ru.cbr.bugbusters.gitwebhookhandler.review.service;
 
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -54,7 +53,6 @@ public class LlmReviewService {
     @Value("${app.ai.context-limit.max-total-chars:" + ContextLimiter.DEFAULT_MAX_TOTAL_CHARS + "}")
     private int maxTotalChars;
 
-    /** Инициализируется в {@link #init()} после чтения конфига. */
     private Semaphore concurrencyLimiter;
     private String reviewPrompt;
 
@@ -75,20 +73,10 @@ public class LlmReviewService {
                 maxConcurrentReviews, maxTotalChars);
     }
 
-    /**
-     * Выполняет ревью одной группы рефакторинга.
-     *
-     * @param index     порядковый номер группы
-     * @param group     группа рефакторинга из первого этапа
-     * @param sessionId sessionId сессии 8084
-     * @return результат ревью
-     */
     public GroupReviewResult review(int index, RefactoringGroup group, String sessionId) {
         String groupName = group.groupName() != null ? group.groupName() : "Group #" + (index + 1);
         boolean acquired = false;
         try {
-            // Concurrency cap: не более maxConcurrentReviews одновременных LLM-запросов ревью.
-            // tryAcquire с таймаутом вместо бесконечного acquire() — избегаем вечной очереди.
             acquired = concurrencyLimiter.tryAcquire(90, TimeUnit.SECONDS);
             if (!acquired) {
                 log.warn("[Review] concurrency cap exceeded, skipping group '{}' (index={})",
@@ -98,12 +86,13 @@ public class LlmReviewService {
             }
 
             ClassContextToolsProvider tools = toolsProviderFactory.getObject().withSession(sessionId);
+            rateLimiter.acquire();
 
-            rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
-
-            String userMessage = ContextLimiter.truncateTotal(buildUserMessage(index, group), maxTotalChars);
-            if (userMessage.endsWith(ContextLimiter.TRUNCATION_MARKER + "")) {
-                log.info("[Review] user-message truncated for group '{}' to {} chars", groupName, maxTotalChars);
+            String rawUserMessage = buildUserMessage(index, group);
+            String userMessage = ContextLimiter.truncateTotal(rawUserMessage, maxTotalChars);
+            if (rawUserMessage.length() > userMessage.length()) {
+                log.info("[Review] user-message truncated for group '{}' from {} to {} chars",
+                        groupName, rawUserMessage.length(), userMessage.length());
             }
 
             String response = chatClientBuilder.build()
