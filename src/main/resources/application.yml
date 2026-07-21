@@ -2,7 +2,7 @@ spring:
   http:
     client:
       connect-timeout: 30s
-      read-timeout: 600s
+      read-timeout: 3600s
   application:
     name: git-webhook-handler
   profiles:
@@ -51,7 +51,8 @@ spring:
       chat:
 #        completions-path: /openai/chat/completions
         options:
-          timeout: 600s # удалить если поможет таймаут клиента http
+          # timeout намеренно не задаётся — чтобы не ограничивать длинные tool-calling цепочки.
+          # Ограничение на уровне HTTP осуществляется через spring.http.client.read-timeout.
           model: ${OPENAI_MODEL:Qwen/Qwen3.5-397B-A17B-GPTQ-Int4}
           temperature: 0.3
         # completions-path убран: openai-java-core 4.x игнорирует это свойство
