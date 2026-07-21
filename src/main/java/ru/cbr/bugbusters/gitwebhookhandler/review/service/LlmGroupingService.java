@@ -14,6 +14,7 @@ import ru.cbr.bugbusters.gitwebhookhandler.review.domain.RefactoringGroup;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -27,8 +28,10 @@ import java.util.regex.Pattern;
  * <p>Перед каждым вызовом LLM применяется глобальный rate-limit через
  * инжектируемый {@link LlmRateLimiter#acquire()} (0,45 req/s ≈ 2,2с между вызовами).
  *
- * <p>Размер user-сообщения ограничивается через {@link ContextLimiter} —
- * суммарный объём файловых контекстов не превышает {@code app.ai.grouping-max-total-chars}.
+ * <p>Размер каждого файлового контекста ограничивается через {@link ContextLimiter#truncateFile} —
+ * не более {@code app.ai.grouping-max-file-chars} символов.
+ * Суммарный user-message ограничивается через {@link ContextLimiter#truncateTotal} —
+ * не более {@code app.ai.grouping-max-total-chars} символов.
  */
 @Slf4j
 @Service
@@ -38,12 +41,14 @@ public class LlmGroupingService {
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectMapper objectMapper;
     private final LlmRateLimiter rateLimiter;
-    private final ContextLimiter contextLimiter;
 
     @Value("${app.ai.grouping-prompt-file:classpath:prompts/grouping-prompt.md}")
     private Resource groupingPromptResource;
 
-    @Value("${app.ai.grouping-max-total-chars:20000}")
+    @Value("${app.ai.grouping-max-file-chars:12000}")
+    private int maxFileChars;
+
+    @Value("${app.ai.grouping-max-total-chars:40000}")
     private int maxTotalChars;
 
     private String groupingPrompt;
@@ -52,7 +57,7 @@ public class LlmGroupingService {
     void loadPrompt() throws IOException {
         groupingPrompt = groupingPromptResource.getContentAsString(StandardCharsets.UTF_8);
         log.info("Grouping prompt загружен из: {}", groupingPromptResource.getDescription());
-        log.info("LlmGroupingService: maxTotalChars={}", maxTotalChars);
+        log.info("LlmGroupingService: maxFileChars={}, maxTotalChars={}", maxFileChars, maxTotalChars);
     }
 
     /**
@@ -67,22 +72,23 @@ public class LlmGroupingService {
             return List.of();
         }
 
-        List<String> limited = contextLimiter.limit(fileStructures, maxTotalChars);
-        if (limited.size() < fileStructures.size()) {
-            log.warn("LlmGroupingService: контекст обрезан с {} до {} файлов (лимит {} символов)",
-                    fileStructures.size(), limited.size(), maxTotalChars);
-        }
+        List<String> truncatedFiles = truncateEachFile(fileStructures);
+        String userMessage = buildUserMessage(truncatedFiles);
+        String limitedMessage = ContextLimiter.truncateTotal(userMessage, maxTotalChars);
 
-        String userMessage = buildUserMessage(limited);
+        if (limitedMessage.length() < userMessage.length()) {
+            log.warn("LlmGroupingService: userMessage обрезан с {} до {} символов (лимит maxTotalChars={})",
+                    userMessage.length(), limitedMessage.length(), maxTotalChars);
+        }
         log.info("Запускаем LLM группировку для {} файлов (userMessage={} символов)",
-                limited.size(), userMessage.length());
+                truncatedFiles.size(), limitedMessage.length());
 
         try {
             rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(groupingPrompt)
-                    .user(userMessage)
+                    .user(limitedMessage)
                     .call()
                     .content();
 
@@ -96,6 +102,19 @@ public class LlmGroupingService {
             log.error("Ошибка LLM-группировки: {}", e.getMessage(), e);
             return List.of();
         }
+    }
+
+    private List<String> truncateEachFile(List<String> fileStructures) {
+        List<String> result = new ArrayList<>(fileStructures.size());
+        for (String fs : fileStructures) {
+            String truncated = ContextLimiter.truncateFile(fs, maxFileChars);
+            if (truncated.length() < fs.length()) {
+                log.warn("LlmGroupingService: файловый контекст обрезан с {} до {} символов",
+                        fs.length(), truncated.length());
+            }
+            result.add(truncated);
+        }
+        return result;
     }
 
     private String buildUserMessage(List<String> fileStructures) {
