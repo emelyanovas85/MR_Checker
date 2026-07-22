@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.openai.core.Timeout;
 import org.gitlab4j.api.GitLabApi;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -49,11 +50,18 @@ public class ClientConfig {
      * <p>Без этого бина Spring AI применяет дефолт openai-java-core (240s),
      * который убивает длинные LLM-вызовы (группировка, tool-calling цепочки).
      * Duration.ZERO = OkHttp callTimeout(0) = без общего лимита на весь call.
-     * Конкретные connect/read/write таймауты задаются в {@link OpenAiHttpClientConfig}.
+     * Конкретные connect/read/write таймауты задаются в {@link }.
      */
     @Bean
     public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer() {
-        return builder -> builder.timeout(Duration.ZERO);
+        return builder -> builder.timeout(
+                Timeout.builder()
+                        .request(Duration.ZERO)          // callTimeout = без лимита
+                        .connect(Duration.ofHours(1))
+                        .read(Duration.ofHours(1))       // ← ГЛАВНЫЙ FIX
+                        .write(Duration.ofHours(1))
+                        .build()
+        );
     }
 
     @Bean
