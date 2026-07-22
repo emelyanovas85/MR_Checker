@@ -110,8 +110,10 @@ public class LlmReviewService {
                     .system(reviewPrompt)
                     .user(userMessage)
                     .tools(tools)
-                    .call()
-                    .content();
+                    .stream()
+                    .content()
+                    .reduce("", String::concat)
+                    .block();
 
             String result = (response == null || response.isBlank()) ? "No issues found." : response;
             return GroupReviewResult.success(index, groupName, result);
@@ -149,8 +151,10 @@ public class LlmReviewService {
                     .prompt()
                     .system(reviewPrompt)
                     .user(userMessage)
-                    .call()
-                    .content();
+                    .stream()
+                    .content()
+                    .reduce("", String::concat)
+                    .block();
             String result = (response == null || response.isBlank()) ? "No issues found." : response;
             return GroupReviewResult.success(index, groupName,
                     result + "\n\n> \u26a0\ufe0f Degraded mode: ответ получен без tool-calling (timeout при основном запросе)");

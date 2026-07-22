@@ -84,13 +84,15 @@ public class LlmGroupingService {
                 truncatedFiles.size(), limitedMessage.length());
 
         try {
-            rateLimiter.acquire(); // 0.45 req/s — общий лимит для всего приложения
+            rateLimiter.acquire();
             String response = chatClientBuilder.build()
                     .prompt()
                     .system(groupingPrompt)
                     .user(limitedMessage)
-                    .call()
-                    .content();
+                    .stream()
+                    .content()
+                    .reduce("", String::concat)
+                    .block();
 
             if (response == null || response.isBlank()) {
                 log.warn("LLM вернул пустой ответ при группировке");
