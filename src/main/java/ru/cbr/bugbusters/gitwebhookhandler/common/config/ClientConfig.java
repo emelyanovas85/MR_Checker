@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.client.RestClient;
+import ru.cbr.bugbusters.gitwebhookhandler.review.service.LlmRateLimiter;
 
 import java.time.Duration;
 
