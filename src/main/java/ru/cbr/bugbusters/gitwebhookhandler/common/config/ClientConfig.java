@@ -45,23 +45,27 @@ import java.time.Duration;
 public class ClientConfig {
 
     /**
-     * Явно отключает callTimeout на уровне SpringAiOpenAiHttpClient.Builder.
+     * Кастомизация SpringAiOpenAiHttpClient.Builder: таймауты + rate-limiter.
      *
      * <p>Без этого бина Spring AI применяет дефолт openai-java-core (240s),
      * который убивает длинные LLM-вызовы (группировка, tool-calling цепочки).
      * Duration.ZERO = OkHttp callTimeout(0) = без общего лимита на весь call.
-     * Конкретные connect/read/write таймауты задаются в {@link }.
+     *
+     * <p>Интерцептор {@link OkHttpRateLimiterInterceptor} перехватывает **каждый** HTTP-запрос
+     * к LLM API, включая tool-calling петли внутри Spring AI ToolCallingAdvisor.
+     * Это гарантирует, что лимит 7 запросов/5сек не будет превышен даже при параллельных
+     * группах ревью.
      */
     @Bean
-    public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer() {
-        return builder -> builder.timeout(
-                Timeout.builder()
+    public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer(LlmRateLimiter rateLimiter) {
+        return builder -> builder
+                .timeout(Timeout.builder()
                         .request(Duration.ZERO)          // callTimeout = без лимита
                         .connect(Duration.ofHours(1))
-                        .read(Duration.ofHours(1))       // ← ГЛАВНЫЙ FIX
+                        .read(Duration.ofHours(1))
                         .write(Duration.ofHours(1))
-                        .build()
-        );
+                        .build())
+                .interceptor(new OkHttpRateLimiterInterceptor(rateLimiter));
     }
 
     @Bean

@@ -2,7 +2,7 @@ spring:
   http:
     client:
       connect-timeout: 30s
-      read-timeout: 3600s
+      read-timeout: 1800s
   application:
     name: git-webhook-handler
   profiles:

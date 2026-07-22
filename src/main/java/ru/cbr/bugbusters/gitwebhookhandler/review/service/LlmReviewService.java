@@ -57,10 +57,9 @@ public class LlmReviewService {
 
     /**
      * Таймаут ожидания слота семафора в секундах.
-     * Увеличен до 600 с, чтобы вторая группа не пропускалась
-     * пока первая выполняет долгий tool-calling цикл.
+     * Увеличен до 1800 с (30 минут) для поддержки длительных tool-calling цепочек.
      */
-    @Value("${app.ai.semaphore-timeout-seconds:600}")
+    @Value("${app.ai.semaphore-timeout-seconds:1800}")
     private int semaphoreTimeoutSeconds;
 
     private Semaphore concurrencyLimiter;
