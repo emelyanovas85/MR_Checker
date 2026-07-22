@@ -84,7 +84,7 @@ public class ClassContextClient {
     public List<String> fetchStructures(String sessionId) {
         String url = appProperties.classContext().url() + "/api/structure/markdown";
 
-        SessionRequest request = new SessionRequest(sessionId, 1, null);
+        SessionRequest request = new SessionRequest(sessionId, 3, null);
 
         try {
             List<String> structures = restClient.post()
